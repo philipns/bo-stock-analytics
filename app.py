@@ -11,7 +11,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v8.2",
+    page_title="BO Stock Analytics v9.1",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -126,8 +126,9 @@ if "nav_page" not in st.session_state:
 def go_to(page_name, ticker=None):
     if ticker:
         st.session_state.selected_stock = normalize_ticker(ticker)
-    st.session_state.nav_page = page_name
-    st.session_state.sidebar_nav = page_name
+    # Do not mutate sidebar_nav after the radio widget has been instantiated.
+    # Queue the destination and apply it at the start of the next rerun.
+    st.session_state.pending_nav_page = page_name
     st.rerun()
 
 def normalize_ticker(t):
@@ -566,10 +567,21 @@ st.sidebar.markdown("## BO Stock Analytics")
 st.sidebar.caption("Opportunity → Analyze → Portfolio → Monitor")
 
 nav_options = ["Dashboard","Scanner","Stock Detail","Portfolio","Watchlist","Universe","Stock Master"]
+
+# Apply programmatic navigation before the widget is instantiated.
+if "pending_nav_page" in st.session_state:
+    pending_page = st.session_state.pop("pending_nav_page")
+    if pending_page in nav_options:
+        st.session_state.nav_page = pending_page
+        st.session_state.sidebar_nav = pending_page
+
+if "sidebar_nav" not in st.session_state:
+    initial_page = st.session_state.nav_page if st.session_state.nav_page in nav_options else "Dashboard"
+    st.session_state.sidebar_nav = initial_page
+
 page = st.sidebar.radio(
     "Navigation",
     nav_options,
-    index=nav_options.index(st.session_state.nav_page) if st.session_state.nav_page in nav_options else 0,
     key="sidebar_nav"
 )
 st.session_state.nav_page = page
@@ -826,7 +838,7 @@ if st.sidebar.button("↻ Refresh Main Scanner", use_container_width=True):
         pass
     st.rerun()
 
-st.title("BO Stock Analytics v9.0")
+st.title("BO Stock Analytics v9.1")
 st.caption("Opportunity Radar • Stock Analysis • Personal Portfolio • IDX Benchmark")
 
 crumb1, crumb2, crumb3, crumb4 = st.columns([1,1,1,3])
