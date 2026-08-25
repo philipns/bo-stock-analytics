@@ -11,7 +11,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v9.1",
+    page_title="BO Stock Analytics v9.2",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -838,15 +838,15 @@ if st.sidebar.button("↻ Refresh Main Scanner", use_container_width=True):
         pass
     st.rerun()
 
-st.title("BO Stock Analytics v9.1")
+st.title("BO Stock Analytics v9.2")
 st.caption("Opportunity Radar • Stock Analysis • Personal Portfolio • IDX Benchmark")
 
 crumb1, crumb2, crumb3, crumb4 = st.columns([1,1,1,3])
-if crumb1.button("🏠 Dashboard", use_container_width=True):
+if crumb1.button("🏠 Dashboard", use_container_width=True, key="topnav_dashboard"):
     go_to("Dashboard")
-if crumb2.button("🔥 Radar", use_container_width=True):
+if crumb2.button("🔥 Radar", use_container_width=True, key="topnav_radar"):
     go_to("Scanner")
-if crumb3.button("💼 Portfolio", use_container_width=True):
+if crumb3.button("💼 Portfolio", use_container_width=True, key="topnav_portfolio"):
     go_to("Portfolio")
 crumb4.caption(f"Current context: {st.session_state.selected_stock.replace('.JK','')}")
 
@@ -1320,17 +1320,17 @@ elif page=="Stock Detail":
                     st.success("Removed from watchlist.")
 
             nav1,nav2,nav3,nav4 = st.columns(4)
-            if nav1.button("← Back to Radar", use_container_width=True):
+            if nav1.button("← Back to Radar", use_container_width=True, key="stockdetail_back_radar"):
                 go_to("Scanner")
-            if nav2.button("⭐ Watchlist", use_container_width=True):
+            if nav2.button("⭐ Watchlist", use_container_width=True, key="stockdetail_watchlist_nav"):
                 if ticker_full not in st.session_state.watchlist:
                     st.session_state.watchlist.append(ticker_full)
                     st.success("Added to Watchlist.")
                 else:
                     go_to("Watchlist")
-            if nav3.button("💼 Portfolio", use_container_width=True):
+            if nav3.button("💼 Portfolio", use_container_width=True, key="stockdetail_portfolio_nav"):
                 go_to("Portfolio")
-            if nav4.button("📚 Stock Master", use_container_width=True):
+            if nav4.button("📚 Stock Master", use_container_width=True, key="stockdetail_master_nav"):
                 go_to("Stock Master")
 
             st.subheader("Candlestick + Pivot Stair")
