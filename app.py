@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v6.2",
+    page_title="BO Stock Analytics v7.0",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -102,6 +102,9 @@ def master_code_from_label(label):
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = ["ANTM.JK","INCO.JK"]
+
+if "manual_portfolio" not in st.session_state:
+    st.session_state.manual_portfolio = []
 
 def normalize_ticker(t):
     t = str(t).strip().upper()
@@ -333,18 +336,18 @@ def analyze_stock(ticker, left, right, data_start, backtest_start, near_pct=3.0)
     # Opportunity-first status. Running positions are separated from fresh opportunities.
     if running:
         setup="IN POSITION"
-    elif stats["Fit Score"]<45:
-        setup="AVOID"
+    elif bool(bt["breakoutBull"].iloc[-1]):
+        setup="READY TO BUY"
     elif pd.notna(extension) and extension>15:
         setup="OVEREXTENDED"
     elif pd.notna(setup_risk) and setup_risk>10:
         setup="HIGH RISK"
-    elif bool(bt["breakoutBull"].iloc[-1]):
-        setup="READY TO BUY"
-    elif pd.notna(dist) and 0<=dist<=near_pct:
+    elif pd.notna(dist) and 0<=dist<=2.0:
         setup="NEAR ENTRY"
-    elif pd.notna(dist) and near_pct<dist<=max(near_pct*2, 6.0):
+    elif pd.notna(dist) and 2.0<dist<=7.0:
         setup="WATCH"
+    elif stats["Fit Score"]<35:
+        setup="AVOID"
     else:
         setup="NOT READY"
 
@@ -369,7 +372,7 @@ def analyze_stock(ticker, left, right, data_start, backtest_start, near_pct=3.0)
     avg_hold = trades["Holding Days"].mean() if len(trades) else np.nan
 
     result = {
-        "Ticker":ticker.replace(".JK",""),"Setup":setup,"Setup Score":setup_score,"Fit Score":stats["Fit Score"],
+        "Ticker":ticker.replace(".JK",""),"Setup":setup,"Opportunity Score":setup_score,"Setup Score":setup_score,"Fit Score":stats["Fit Score"],
         "Close":close,"Pivot High":ph,"Pivot Low":pl,"Distance Entry %":dist,
         "Setup Risk %":setup_risk,"Trades":len(trades),"Win Rate %":wr,
         "Profit Factor":stats["Profit Factor"],"Expectancy %":stats["Expectancy %"],
@@ -559,8 +562,8 @@ if st.sidebar.button("↻ Refresh Main Scanner", use_container_width=True):
         pass
     st.rerun()
 
-st.title("BO Stock Analytics v6.2")
-st.caption("IDX Breakout Radar • 951-stock master • Pivot 4/4 • Opportunity-first scanner • resilient page loading")
+st.title("BO Stock Analytics v7.0")
+st.caption("IDX Opportunity Radar • 951-stock Personal Portfolio Builder • Pivot 4/4 • AUTO + MANUAL workflow")
 
 scanner_available = not scanner.empty
 if not scanner_available and page in ["Dashboard","Scanner","Universe","Portfolio"]:
@@ -671,25 +674,59 @@ elif page=="Scanner":
             auto_full = st.session_state.get("auto_full_scan", pd.DataFrame())
             if not auto_full.empty:
                 st.success(f"Full BO analysis completed for {len(auto_full)} stocks.")
-                auto_view = auto_full[auto_full["Fit Score"] >= min_fit].copy()
-                st.dataframe(auto_view.round(2), use_container_width=True, hide_index=True)
 
                 st.markdown("#### Breakout Radar")
-                radar_tab, new_tab, pos_tab = st.tabs(["🔥 READY / NEAR / WATCH","⚡ New Breakouts","🔵 Active Positions"])
-                radar_cols=["Rank","Ticker","Setup","Setup Score","Fit Score","Close","Pivot High","Distance Entry %","Setup Risk %","Trades","Win Rate %","Profit Factor","Expectancy %","Trend"]
+                radar_tab, new_tab, pos_tab, all_tab = st.tabs(
+                    ["🔥 READY / NEAR / WATCH","⚡ New Breakouts","🔵 Active Positions","All Results"]
+                )
+                radar_cols=[
+                    "Rank","Ticker","Setup","Opportunity Score","Fit Score","Close","Pivot High",
+                    "Distance Entry %","Setup Risk %","Trades","Win Rate %","Profit Factor",
+                    "Expectancy %","Alpha %","Trend"
+                ]
+
                 with radar_tab:
-                    radar=auto_view[auto_view["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"])].copy()
-                    radar=radar.sort_values(["Setup Score","Distance Entry %"],ascending=[False,True],na_position="last")
-                    if radar.empty: st.info("Belum ada READY / NEAR / WATCH pada batch ini. Coba tambah jumlah Full BO candidates atau longgarkan pre-filter.")
-                    else: st.dataframe(radar[radar_cols].round(2),use_container_width=True,hide_index=True)
+                    radar=auto_full[
+                        auto_full["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"])
+                    ].copy()
+                    radar=radar.sort_values(
+                        ["Opportunity Score","Distance Entry %","Fit Score"],
+                        ascending=[False,True,False],
+                        na_position="last"
+                    )
+                    if radar.empty:
+                        st.info("Belum ada READY / NEAR / WATCH pada batch ini. Coba tambah jumlah Full BO candidates.")
+                    else:
+                        st.dataframe(
+                            radar[[c for c in radar_cols if c in radar.columns]].round(2),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+
                 with new_tab:
-                    fresh=auto_view[auto_view["Setup"]=="READY TO BUY"].copy()
-                    if fresh.empty: st.info("Belum ada breakout baru pada candle terbaru.")
-                    else: st.dataframe(fresh[radar_cols].round(2),use_container_width=True,hide_index=True)
+                    fresh=auto_full[auto_full["Setup"]=="READY TO BUY"].copy()
+                    if fresh.empty:
+                        st.info("Belum ada breakout baru pada candle terbaru.")
+                    else:
+                        st.dataframe(
+                            fresh[[c for c in radar_cols if c in fresh.columns]].round(2),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+
                 with pos_tab:
-                    active=auto_view[auto_view["Setup"]=="IN POSITION"].copy()
-                    if active.empty: st.info("Tidak ada posisi strategy yang sedang aktif pada batch ini.")
-                    else: st.dataframe(active[radar_cols].round(2),use_container_width=True,hide_index=True)
+                    active=auto_full[auto_full["Setup"]=="IN POSITION"].copy()
+                    if active.empty:
+                        st.info("Tidak ada posisi strategy yang sedang aktif pada batch ini.")
+                    else:
+                        st.dataframe(
+                            active[[c for c in radar_cols if c in active.columns]].round(2),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+
+                with all_tab:
+                    st.dataframe(auto_full.round(2), use_container_width=True, hide_index=True)
 
     with tab_batch:
         st.caption("Pilih saham manual dari Stock Master untuk scanner batch.")
@@ -731,7 +768,7 @@ elif page=="Scanner":
                 sorted(scanner["Setup"].dropna().unique()),
                 default=sorted(scanner["Setup"].dropna().unique())
             )
-            view = scanner[(scanner["Setup"].isin(status_filter)) & (scanner["Fit Score"] >= min_fit)].copy()
+            view = scanner[scanner["Setup"].isin(status_filter)].copy()
             rtab, ptab, alltab = st.tabs(["🔥 Opportunity Radar","🔵 In Position","All Results"])
             with rtab:
                 rv=view[view["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"])].copy()
@@ -746,7 +783,7 @@ elif page=="Scanner":
 elif page=="Universe":
     st.subheader("Universe")
     st.write(f"Mode aktif: **{universe_mode}**")
-    st.caption("Scanner Universe adalah subset untuk ranking rutin. Stock Detail tidak dibatasi oleh daftar ini.")
+    st.caption("Universe di sini hanya mengatur sumber scanner rutin. Portfolio personal dibangun di halaman Portfolio dari seluruh 951 saham IDX.")
     if scanner.empty:
         st.warning("Data analitik Main Universe belum tersedia. Daftar ticker tetap ditampilkan.")
         st.dataframe(
@@ -882,6 +919,204 @@ elif page=="Stock Detail":
 
             st.subheader("Last 50 Closed Trades")
             st.dataframe(res["_trades"].tail(50).round(2),use_container_width=True,hide_index=True)
+
+elif page=="Watchlist":
+    st.subheader("My Watchlist")
+    st.caption("Watchlist tersimpan selama session aplikasi aktif.")
+    wrows=[]
+    for t in st.session_state.watchlist:
+        try:
+            r=analyze_stock(t,left,right,data_start,backtest_start)
+            if r: wrows.append({k:v for k,v in r.items() if not k.startswith("_")})
+        except: pass
+    if wrows:
+        wdf=pd.DataFrame(wrows)
+        st.dataframe(wdf[["Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Strategy Return %","Buy&Hold %","Alpha %","Profit Factor"]].round(2),use_container_width=True,hide_index=True)
+    else:
+        st.info("Watchlist masih kosong.")
+
+elif page=="Portfolio":
+    st.subheader("Portfolio Builder")
+    st.caption(
+        "Portfolio manual benar-benar personal: pilih saham dari seluruh 951 IDX Stock Master. "
+        "Saham dapat ditambahkan tanpa harus lolos filter AUTO."
+    )
+
+    build_tab, analyze_tab = st.tabs(["➕ Build My Portfolio","📊 Analyze Portfolio"])
+
+    with build_tab:
+        st.markdown("### Search Stock")
+        selected_label = st.selectbox(
+            "Search from IDX Stock Master",
+            idx_master["label"].tolist(),
+            help="Ketik kode saham atau nama emiten."
+        )
+        selected_code = master_code_from_label(selected_label)
+        selected_ticker = normalize_ticker(selected_code)
+
+        with st.spinner(f"Loading {selected_code}..."):
+            preview = analyze_stock(selected_ticker,left,right,data_start,backtest_start)
+
+        if preview is None:
+            st.warning("Data saham tidak tersedia / histori belum cukup.")
+        else:
+            st.markdown(f"### {preview['Ticker']} — Stock Preview")
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.metric("Close",f"{preview['Close']:,.0f}")
+            c2.metric("Setup",preview["Setup"])
+            c3.metric("Opportunity",f"{preview['Opportunity Score']:.1f}")
+            c4.metric("Fit Score",f"{preview['Fit Score']:.1f}")
+            c5.metric(
+                "Distance Entry",
+                f"{preview['Distance Entry %']:.2f}%" if pd.notna(preview["Distance Entry %"]) else "N/A"
+            )
+
+            c6,c7,c8,c9 = st.columns(4)
+            c6.metric("Pivot High",f"{preview['Pivot High']:,.0f}" if pd.notna(preview["Pivot High"]) else "N/A")
+            c7.metric("BO Return",f"{preview['Strategy Return %']:.1f}%" if pd.notna(preview["Strategy Return %"]) else "N/A")
+            c8.metric("Buy & Hold",f"{preview['Buy&Hold %']:.1f}%" if pd.notna(preview["Buy&Hold %"]) else "N/A")
+            c9.metric("Profit Factor",f"{preview['Profit Factor']:.2f}" if pd.notna(preview["Profit Factor"]) else "N/A")
+
+            b1,b2 = st.columns(2)
+            if b1.button("➕ Tambahkan ke Portfolio",type="primary",use_container_width=True):
+                if selected_ticker not in st.session_state.manual_portfolio:
+                    st.session_state.manual_portfolio.append(selected_ticker)
+                    st.success(f"{selected_code} ditambahkan.")
+                    st.rerun()
+                else:
+                    st.info(f"{selected_code} sudah ada di portfolio.")
+
+            if b2.button("⭐ Tambahkan ke Watchlist",use_container_width=True):
+                if selected_ticker not in st.session_state.watchlist:
+                    st.session_state.watchlist.append(selected_ticker)
+                    st.success(f"{selected_code} ditambahkan ke Watchlist.")
+
+        st.divider()
+        st.markdown("### My Manual Portfolio")
+
+        if not st.session_state.manual_portfolio:
+            st.info("Portfolio manual masih kosong.")
+        else:
+            rows = []
+            for ticker in st.session_state.manual_portfolio:
+                try:
+                    r=analyze_stock(ticker,left,right,data_start,backtest_start)
+                    if r:
+                        rows.append({
+                            "Ticker":r["Ticker"],
+                            "Setup":r["Setup"],
+                            "Opportunity Score":r["Opportunity Score"],
+                            "Fit Score":r["Fit Score"],
+                            "Close":r["Close"],
+                            "Pivot High":r["Pivot High"],
+                            "Distance Entry %":r["Distance Entry %"],
+                            "BO Return %":r["Strategy Return %"],
+                            "BuyHold %":r["Buy&Hold %"],
+                            "Alpha %":r["Alpha %"],
+                            "Profit Factor":r["Profit Factor"]
+                        })
+                except Exception:
+                    pass
+
+            if rows:
+                manual_df=pd.DataFrame(rows)
+                st.dataframe(manual_df.round(2),use_container_width=True,hide_index=True)
+
+            remove_code=st.selectbox(
+                "Remove stock",
+                [x.replace(".JK","") for x in st.session_state.manual_portfolio]
+            )
+            r1,r2=st.columns(2)
+            if r1.button("🗑 Remove Selected",use_container_width=True):
+                rt=normalize_ticker(remove_code)
+                if rt in st.session_state.manual_portfolio:
+                    st.session_state.manual_portfolio.remove(rt)
+                    st.rerun()
+            if r2.button("Clear Manual Portfolio",use_container_width=True):
+                st.session_state.manual_portfolio=[]
+                st.rerun()
+
+    with analyze_tab:
+        st.markdown("### Portfolio Source")
+        source_mode=st.radio(
+            "Choose source",
+            ["MY MANUAL PORTFOLIO","AUTO RADAR CANDIDATES","AUTO + MANUAL"],
+            horizontal=True
+        )
+
+        manual_codes=[x.replace(".JK","") for x in st.session_state.manual_portfolio]
+        auto_full=st.session_state.get("auto_full_scan",pd.DataFrame())
+
+        if not auto_full.empty:
+            auto_candidates=auto_full[
+                auto_full["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"])
+            ].sort_values(
+                ["Opportunity Score","Distance Entry %"],
+                ascending=[False,True]
+            )["Ticker"].tolist()
+        else:
+            auto_candidates=[]
+
+        if source_mode=="MY MANUAL PORTFOLIO":
+            portfolio_options=manual_codes
+        elif source_mode=="AUTO RADAR CANDIDATES":
+            portfolio_options=auto_candidates
+        else:
+            portfolio_options=list(dict.fromkeys(auto_candidates+manual_codes))
+
+        if not portfolio_options:
+            st.info(
+                "Belum ada saham pada source ini. Tambahkan saham manual atau jalankan "
+                "Smart AUTO Scanner → Full BO Scanner."
+            )
+        else:
+            selected_names=st.multiselect(
+                "Select stocks for analysis",
+                portfolio_options,
+                default=portfolio_options[:max_positions]
+            )
+
+            rows=[]
+            for name in selected_names:
+                try:
+                    r=analyze_stock(normalize_ticker(name),left,right,data_start,backtest_start)
+                    if r:
+                        rows.append(r)
+                except Exception:
+                    pass
+
+            if rows:
+                ptab=pd.DataFrame([{
+                    "Ticker":r["Ticker"],
+                    "Setup":r["Setup"],
+                    "Opportunity Score":r["Opportunity Score"],
+                    "Fit Score":r["Fit Score"],
+                    "BO Return %":r["Strategy Return %"],
+                    "BuyHold %":r["Buy&Hold %"],
+                    "Alpha %":r["Alpha %"],
+                    "BO Max DD %":r["Max DD %"],
+                    "BuyHold Max DD %":r["Buy&Hold Max DD %"],
+                    "PF":r["Profit Factor"]
+                } for r in rows])
+
+                st.dataframe(ptab.round(2),use_container_width=True,hide_index=True)
+
+                ihsg=download_stock("^JKSE",data_start)
+                ihsg=ihsg[ihsg.index>=backtest_start] if not ihsg.empty else ihsg
+                ihsg_ret=((ihsg["Close"].iloc[-1]/ihsg["Close"].iloc[0]-1)*100) if len(ihsg)>1 else np.nan
+
+                m1,m2,m3,m4=st.columns(4)
+                m1.metric("Selected Stocks",len(rows))
+                m2.metric("Avg BO Return",f"{ptab['BO Return %'].mean():.1f}%")
+                m3.metric("Avg Buy & Hold",f"{ptab['BuyHold %'].mean():.1f}%")
+                m4.metric("IHSG Buy & Hold",f"{ihsg_ret:.1f}%" if pd.notna(ihsg_ret) else "N/A")
+
+                st.info(
+                    "V7 sudah memakai builder personal + AUTO Radar source. "
+                    "Full dynamic daily-MTM portfolio engine akan menjadi tahap berikutnya."
+                )
+            else:
+                st.warning("Belum ada saham yang berhasil dianalisis.")
 
 elif page=="Watchlist":
     st.subheader("My Watchlist")
