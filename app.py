@@ -11,7 +11,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v8.0",
+    page_title="BO Stock Analytics v8.1",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -317,6 +317,92 @@ def normalize_curve(curve, initial_capital=100_000_000):
         return curve
     return curve / float(curve.iloc[0]) * float(initial_capital)
 
+
+def to_cumulative_return_pct(series):
+    s = series.dropna().copy()
+    if s.empty:
+        return pd.Series(dtype=float)
+    base = float(s.iloc[0])
+    if base == 0:
+        return pd.Series(dtype=float)
+    return (s / base - 1.0) * 100.0
+
+def align_common_start(series_dict):
+    valid = {k:v.dropna().copy() for k,v in series_dict.items() if v is not None and not v.dropna().empty}
+    if not valid:
+        return pd.DataFrame()
+    common_start = max(s.index.min() for s in valid.values())
+    aligned = {}
+    for k,s in valid.items():
+        x = s[s.index >= common_start].copy()
+        if not x.empty:
+            aligned[k] = x
+    if not aligned:
+        return pd.DataFrame()
+    df = pd.concat(aligned, axis=1).sort_index().ffill()
+    df = df.dropna(how="all")
+    return df
+
+def max_drawdown_from_return_curve(return_pct_series):
+    s = return_pct_series.dropna()
+    if s.empty:
+        return np.nan
+    equity = 1.0 + s / 100.0
+    peak = equity.cummax()
+    dd = (equity / peak - 1.0) * 100.0
+    return float(dd.min())
+
+def build_equal_weight_buyhold_portfolio(stock_price_series, initial_capital=100_000_000):
+    """
+    Equal-weight buy & hold portfolio. Each stock starts at the same common date.
+    Returns daily equity curve.
+    """
+    if not stock_price_series:
+        return pd.Series(dtype=float)
+
+    valid = {k:v.dropna() for k,v in stock_price_series.items() if v is not None and not v.dropna().empty}
+    if not valid:
+        return pd.Series(dtype=float)
+
+    common_start = max(v.index.min() for v in valid.values())
+    normalized = []
+    for ticker, s in valid.items():
+        x = s[s.index >= common_start].copy()
+        if x.empty:
+            continue
+        normalized.append((x / float(x.iloc[0])).rename(ticker))
+
+    if not normalized:
+        return pd.Series(dtype=float)
+
+    df = pd.concat(normalized, axis=1).sort_index().ffill()
+    portfolio_index = df.mean(axis=1)
+    return portfolio_index * float(initial_capital)
+
+def build_equal_weight_bo_portfolio(bo_curves, initial_capital=100_000_000):
+    """
+    Equal-weight aggregation of per-stock BO MTM curves.
+    Each selected stock gets equal starting allocation.
+    """
+    valid = {k:v.dropna() for k,v in bo_curves.items() if v is not None and not v.dropna().empty}
+    if not valid:
+        return pd.Series(dtype=float)
+
+    common_start = max(v.index.min() for v in valid.values())
+    components = []
+    for ticker, s in valid.items():
+        x = s[s.index >= common_start].copy()
+        if x.empty:
+            continue
+        components.append((x / float(x.iloc[0])).rename(ticker))
+
+    if not components:
+        return pd.Series(dtype=float)
+
+    df = pd.concat(components, axis=1).sort_index().ffill()
+    portfolio_index = df.mean(axis=1)
+    return portfolio_index * float(initial_capital)
+
 def fit_score_current(bt, trades, backtest_start):
     total = len(trades)
     wins = trades[trades["Return %"] > 0] if total else pd.DataFrame()
@@ -621,8 +707,8 @@ if st.sidebar.button("↻ Refresh Main Scanner", use_container_width=True):
         pass
     st.rerun()
 
-st.title("BO Stock Analytics v8.0")
-st.caption("IDX Opportunity Radar • Candlestick Stock Detail • BO vs Buy & Hold vs IHSG equity curves • Pivot 4/4")
+st.title("BO Stock Analytics v8.1")
+st.caption("IDX Opportunity Radar • Candlestick • 0%-based Return Comparison • Portfolio vs B&H vs IHSG • Pivot 4/4")
 
 scanner_available = not scanner.empty
 if not scanner_available and page in ["Dashboard","Scanner","Universe","Portfolio"]:
@@ -1000,8 +1086,9 @@ elif page=="Stock Detail":
             )
             st.plotly_chart(fig,use_container_width=True)
 
-            st.subheader("Equity Curve — BO vs Buy & Hold vs IHSG")
+            st.subheader("Cumulative Return % — BO vs Buy & Hold vs IHSG")
             full_bt = res["_bt"].copy()
+
             bo_curve = build_bo_daily_equity(
                 full_bt,
                 res["_trades"],
@@ -1016,73 +1103,63 @@ elif page=="Stock Detail":
             )
 
             ihsg_df = download_stock("^JKSE", data_start)
-            if not ihsg_df.empty:
-                ihsg_curve = build_buyhold_curve(
-                    ihsg_df["Close"],
-                    backtest_start,
-                    initial_capital
-                )
+            ihsg_curve = (
+                build_buyhold_curve(ihsg_df["Close"], backtest_start, initial_capital)
+                if not ihsg_df.empty else pd.Series(dtype=float)
+            )
+
+            aligned = align_common_start({
+                "BO Strategy": bo_curve,
+                f"{res['Ticker']} Buy & Hold": stock_bh_curve,
+                "IHSG": ihsg_curve
+            })
+
+            if aligned.empty:
+                st.info("Comparison curve belum tersedia untuk periode ini.")
             else:
-                ihsg_curve = pd.Series(dtype=float)
+                return_df = pd.DataFrame(index=aligned.index)
+                for col in aligned.columns:
+                    return_df[col] = to_cumulative_return_pct(aligned[col])
+                return_df = return_df.ffill()
 
-            eq_df = pd.concat([
-                bo_curve.rename("BO Strategy"),
-                stock_bh_curve.rename(f"{res['Ticker']} Buy & Hold"),
-                ihsg_curve.rename("IHSG Buy & Hold")
-            ],axis=1).sort_index().ffill().dropna(how="all")
-
-            if eq_df.empty:
-                st.info("Equity curve belum tersedia untuk periode ini.")
-            else:
-                # Align to first common available values and normalize each series independently
-                norm_df = pd.DataFrame(index=eq_df.index)
-                for col in eq_df.columns:
-                    s = eq_df[col].dropna()
-                    if not s.empty:
-                        norm_df[col] = s / float(s.iloc[0]) * float(initial_capital)
-                norm_df = norm_df.ffill()
-
-                eq_fig = go.Figure()
-                for col in norm_df.columns:
-                    eq_fig.add_trace(go.Scatter(
-                        x=norm_df.index,
-                        y=norm_df[col],
+                ret_fig = go.Figure()
+                for col in return_df.columns:
+                    ret_fig.add_trace(go.Scatter(
+                        x=return_df.index,
+                        y=return_df[col],
                         mode="lines",
                         name=col
                     ))
-                eq_fig.update_layout(
+                ret_fig.add_hline(y=0, line_dash="dot")
+                ret_fig.update_layout(
                     height=500,
                     margin=dict(l=10,r=10,t=30,b=10),
-                    yaxis_title="Equity (IDR, same starting capital)",
+                    yaxis_title="Cumulative Return (%)",
                     hovermode="x unified",
                     legend=dict(orientation="h")
                 )
-                st.plotly_chart(eq_fig,use_container_width=True)
+                st.plotly_chart(ret_fig, use_container_width=True)
 
-                latest = {}
-                for col in norm_df.columns:
-                    s = norm_df[col].dropna()
-                    latest[col] = float(s.iloc[-1]) if not s.empty else np.nan
+                final_returns = {
+                    col: float(return_df[col].dropna().iloc[-1])
+                    for col in return_df.columns
+                    if not return_df[col].dropna().empty
+                }
 
-                ec1,ec2,ec3 = st.columns(3)
-                bo_final = latest.get("BO Strategy",np.nan)
-                bh_final = latest.get(f"{res['Ticker']} Buy & Hold",np.nan)
-                ihsg_final = latest.get("IHSG Buy & Hold",np.nan)
+                r1,r2,r3,r4,r5 = st.columns(5)
+                bo_ret = final_returns.get("BO Strategy", np.nan)
+                bh_ret = final_returns.get(f"{res['Ticker']} Buy & Hold", np.nan)
+                ihsg_ret_curve = final_returns.get("IHSG", np.nan)
 
-                ec1.metric(
-                    "BO Final Equity",
-                    f"Rp{bo_final/1_000_000:,.1f}M" if pd.notna(bo_final) else "N/A",
-                    f"{(bo_final/initial_capital-1)*100:.1f}%" if pd.notna(bo_final) else None
-                )
-                ec2.metric(
-                    "Stock B&H Final Equity",
-                    f"Rp{bh_final/1_000_000:,.1f}M" if pd.notna(bh_final) else "N/A",
-                    f"{(bh_final/initial_capital-1)*100:.1f}%" if pd.notna(bh_final) else None
-                )
-                ec3.metric(
-                    "IHSG Final Equity",
-                    f"Rp{ihsg_final/1_000_000:,.1f}M" if pd.notna(ihsg_final) else "N/A",
-                    f"{(ihsg_final/initial_capital-1)*100:.1f}%" if pd.notna(ihsg_final) else None
+                r1.metric("BO Return", f"{bo_ret:.1f}%" if pd.notna(bo_ret) else "N/A")
+                r2.metric("Stock B&H", f"{bh_ret:.1f}%" if pd.notna(bh_ret) else "N/A")
+                r3.metric("IHSG", f"{ihsg_ret_curve:.1f}%" if pd.notna(ihsg_ret_curve) else "N/A")
+                r4.metric("BO vs Stock", f"{bo_ret-bh_ret:.1f}%" if pd.notna(bo_ret) and pd.notna(bh_ret) else "N/A")
+                r5.metric("BO vs IHSG", f"{bo_ret-ihsg_ret_curve:.1f}%" if pd.notna(bo_ret) and pd.notna(ihsg_ret_curve) else "N/A")
+
+                st.caption(
+                    "Semua kurva dinormalisasi ke 0% pada common start date pertama "
+                    "ketika BO Strategy, saham, dan IHSG sama-sama memiliki data."
                 )
 
             st.subheader("Breakout Strategy vs Buy & Hold")
@@ -1304,20 +1381,111 @@ elif page=="Portfolio":
 
                 st.dataframe(ptab.round(2),use_container_width=True,hide_index=True)
 
+                # =====================================================
+                # Portfolio comparison: BO vs Equal-Weight B&H vs IHSG
+                # =====================================================
+                bo_component_curves = {}
+                bh_component_prices = {}
+
+                for r in rows:
+                    ticker_key = r["Ticker"]
+                    bt_full = r["_bt"].copy()
+
+                    bo_component_curves[ticker_key] = build_bo_daily_equity(
+                        bt_full,
+                        r["_trades"],
+                        r["_running"],
+                        backtest_start,
+                        initial_capital
+                    )
+                    bh_component_prices[ticker_key] = bt_full["Close"][bt_full.index >= backtest_start].copy()
+
+                bo_portfolio_curve = build_equal_weight_bo_portfolio(
+                    bo_component_curves,
+                    initial_capital
+                )
+                bh_portfolio_curve = build_equal_weight_buyhold_portfolio(
+                    bh_component_prices,
+                    initial_capital
+                )
+
                 ihsg=download_stock("^JKSE",data_start)
                 ihsg=ihsg[ihsg.index>=backtest_start] if not ihsg.empty else ihsg
-                ihsg_ret=((ihsg["Close"].iloc[-1]/ihsg["Close"].iloc[0]-1)*100) if len(ihsg)>1 else np.nan
-
-                m1,m2,m3,m4=st.columns(4)
-                m1.metric("Selected Stocks",len(rows))
-                m2.metric("Avg BO Return",f"{ptab['BO Return %'].mean():.1f}%")
-                m3.metric("Avg Buy & Hold",f"{ptab['BuyHold %'].mean():.1f}%")
-                m4.metric("IHSG Buy & Hold",f"{ihsg_ret:.1f}%" if pd.notna(ihsg_ret) else "N/A")
-
-                st.info(
-                    "V7 sudah memakai builder personal + AUTO Radar source. "
-                    "Full dynamic daily-MTM portfolio engine akan menjadi tahap berikutnya."
+                ihsg_curve = (
+                    build_buyhold_curve(ihsg["Close"], backtest_start, initial_capital)
+                    if len(ihsg)>1 else pd.Series(dtype=float)
                 )
+
+                aligned_portfolio = align_common_start({
+                    "BO Portfolio": bo_portfolio_curve,
+                    "Portfolio Buy & Hold": bh_portfolio_curve,
+                    "IHSG": ihsg_curve
+                })
+
+                st.subheader("Portfolio Cumulative Return %")
+                if aligned_portfolio.empty:
+                    st.info("Portfolio comparison curve belum tersedia.")
+                else:
+                    port_return = pd.DataFrame(index=aligned_portfolio.index)
+                    for col in aligned_portfolio.columns:
+                        port_return[col] = to_cumulative_return_pct(aligned_portfolio[col])
+                    port_return = port_return.ffill()
+
+                    pfig = go.Figure()
+                    for col in port_return.columns:
+                        pfig.add_trace(go.Scatter(
+                            x=port_return.index,
+                            y=port_return[col],
+                            mode="lines",
+                            name=col
+                        ))
+                    pfig.add_hline(y=0, line_dash="dot")
+                    pfig.update_layout(
+                        height=520,
+                        margin=dict(l=10,r=10,t=30,b=10),
+                        yaxis_title="Cumulative Return (%)",
+                        hovermode="x unified",
+                        legend=dict(orientation="h")
+                    )
+                    st.plotly_chart(pfig,use_container_width=True)
+
+                    final_port = {
+                        col: float(port_return[col].dropna().iloc[-1])
+                        for col in port_return.columns
+                        if not port_return[col].dropna().empty
+                    }
+
+                    bo_port_ret = final_port.get("BO Portfolio",np.nan)
+                    bh_port_ret = final_port.get("Portfolio Buy & Hold",np.nan)
+                    ihsg_port_ret = final_port.get("IHSG",np.nan)
+
+                    pm1,pm2,pm3,pm4,pm5 = st.columns(5)
+                    pm1.metric("BO Portfolio",f"{bo_port_ret:.1f}%" if pd.notna(bo_port_ret) else "N/A")
+                    pm2.metric("Portfolio B&H",f"{bh_port_ret:.1f}%" if pd.notna(bh_port_ret) else "N/A")
+                    pm3.metric("IHSG",f"{ihsg_port_ret:.1f}%" if pd.notna(ihsg_port_ret) else "N/A")
+                    pm4.metric("BO vs B&H",f"{bo_port_ret-bh_port_ret:.1f}%" if pd.notna(bo_port_ret) and pd.notna(bh_port_ret) else "N/A")
+                    pm5.metric("BO vs IHSG",f"{bo_port_ret-ihsg_port_ret:.1f}%" if pd.notna(bo_port_ret) and pd.notna(ihsg_port_ret) else "N/A")
+
+                    summary_rows = []
+                    for col in port_return.columns:
+                        s = port_return[col].dropna()
+                        if s.empty:
+                            continue
+                        summary_rows.append({
+                            "Benchmark":col,
+                            "Total Return %":float(s.iloc[-1]),
+                            "Max Drawdown %":max_drawdown_from_return_curve(s)
+                        })
+                    st.dataframe(
+                        pd.DataFrame(summary_rows).round(2),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    st.caption(
+                        "Portfolio Buy & Hold menggunakan equal-weight antar saham terpilih. "
+                        "Semua benchmark dimulai dari 0% pada common start date yang sama."
+                    )
             else:
                 st.warning("Belum ada saham yang berhasil dianalisis.")
 
