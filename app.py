@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v4",
+    page_title="BO Stock Analytics v5",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -372,6 +372,14 @@ right = st.sidebar.number_input("Pivot Right",min_value=1,value=4,step=1)
 initial_capital = st.sidebar.number_input("Initial Capital (IDR)",min_value=1_000_000,value=100_000_000,step=10_000_000)
 min_fit = st.sidebar.slider("Minimum Fit Score",0,100,45)
 max_positions = st.sidebar.number_input("Max Positions",min_value=1,max_value=20,value=5,step=1)
+
+st.sidebar.markdown("### AUTO Scanner Filter")
+auto_price_min = st.sidebar.number_input("Minimum Price", min_value=0.0, value=100.0, step=50.0)
+auto_liq_min_b = st.sidebar.number_input("Minimum Avg Value / Day (Rp B)", min_value=0.0, value=5.0, step=5.0)
+auto_atr_min = st.sidebar.number_input("Minimum ATR %", min_value=0.0, value=1.0, step=0.25)
+auto_history_days = st.sidebar.number_input("Minimum Trading Days", min_value=60, value=200, step=20)
+auto_prefilter_limit = st.sidebar.slider("Max Candidates After Pre-filter", 20, 250, 100, 10)
+
 backtest_start_input = st.sidebar.date_input("Backtest Start",value=pd.Timestamp("2017-08-20"))
 backtest_start = pd.Timestamp(backtest_start_input)
 universe_mode = st.sidebar.selectbox("Universe Mode",["AUTO","MANUAL","AUTO+MANUAL"])
@@ -392,6 +400,101 @@ else:
 st.sidebar.caption(f"{len(universe)} scanner tickers active")
 data_start="2005-01-01"
 
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def quick_prefilter_idx(master_codes_tuple, price_min, liq_min_b, atr_min_pct, min_days, max_candidates):
+    """
+    Fast pre-filter using only recent data.
+    This is intentionally lighter than full historical BO backtest.
+    """
+    rows = []
+    tickers = [normalize_ticker(x) for x in master_codes_tuple if x]
+    tickers = [x for x in tickers if x]
+
+    # Process in chunks to reduce Yahoo request overhead / failure risk.
+    chunk_size = 60
+    for start in range(0, len(tickers), chunk_size):
+        chunk = tickers[start:start+chunk_size]
+        try:
+            raw = yf.download(
+                chunk,
+                period="18mo",
+                group_by="ticker",
+                auto_adjust=False,
+                threads=True,
+                progress=False,
+            )
+        except Exception:
+            continue
+
+        for ticker in chunk:
+            try:
+                if len(chunk) == 1:
+                    d = raw.copy()
+                else:
+                    if ticker not in raw.columns.get_level_values(0):
+                        continue
+                    d = raw[ticker].copy()
+
+                if d.empty or "Close" not in d.columns:
+                    continue
+                d = d[["Open","High","Low","Close","Volume"]].dropna()
+                if len(d) < min_days:
+                    continue
+
+                close = float(d["Close"].iloc[-1])
+                if close < price_min:
+                    continue
+
+                avg_value_b = float((d["Close"] * d["Volume"]).tail(20).mean() / 1e9)
+                if avg_value_b < liq_min_b:
+                    continue
+
+                atr_pct_now = float(atr(d, 14).iloc[-1] / close * 100)
+                if pd.isna(atr_pct_now) or atr_pct_now < atr_min_pct:
+                    continue
+
+                ema200 = d["Close"].ewm(span=200, adjust=False).mean()
+                ema_now = float(ema200.iloc[-1])
+                ema_rising = len(ema200) > 20 and ema200.iloc[-1] > ema200.iloc[-21]
+                above_ema = close > ema_now
+
+                # Lightweight score only for candidate ordering.
+                trend_score = (10 if above_ema else 0) + (10 if ema_rising else 0)
+                liq_score = clamp(avg_value_b / 50.0 * 10.0, 0, 10)
+                atr_score = clamp(atr_pct_now / 3.0 * 10.0, 0, 10)
+                pre_score = trend_score + liq_score + atr_score
+
+                rows.append({
+                    "Ticker": ticker.replace(".JK",""),
+                    "Close": close,
+                    "Avg Value B/day": avg_value_b,
+                    "ATR %": atr_pct_now,
+                    "Above EMA200": above_ema,
+                    "EMA200 Rising": ema_rising,
+                    "Pre Score": pre_score,
+                })
+            except Exception:
+                continue
+
+    if not rows:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(rows)
+    out = out.sort_values(
+        ["Pre Score","Avg Value B/day"],
+        ascending=[False,False]
+    ).head(max_candidates).reset_index(drop=True)
+    out.insert(0,"Pre Rank",np.arange(1,len(out)+1))
+    return out
+
+@st.cache_data(ttl=3600, show_spinner="Running full BO analysis...")
+def full_auto_scan(candidate_tuple, left, right, data_start, backtest_start_str):
+    return scan_universe(
+        tuple(normalize_ticker(x) for x in candidate_tuple),
+        left, right, data_start, backtest_start_str
+    )
+
 @st.cache_data(ttl=3600,show_spinner="Scanning universe...")
 def scan_universe(universe_tuple,left,right,data_start,backtest_start_str):
     rows=[]
@@ -410,8 +513,8 @@ def scan_universe(universe_tuple,left,right,data_start,backtest_start_str):
 
 scanner=scan_universe(tuple(universe),left,right,data_start,str(backtest_start.date()))
 
-st.title("BO Stock Analytics v4")
-st.caption("IDX breakout research • Repository-backed Stock Master • Pivot 4/4 • Python/Yahoo Finance")
+st.title("BO Stock Analytics v5")
+st.caption("IDX smart scanner • 951-stock master • Pre-filter → BO 4/4 full analysis • Python/Yahoo Finance")
 
 if page in ["Dashboard","Scanner","Universe","Portfolio"] and scanner.empty:
     st.error("Scanner data unavailable. Try another universe or refresh later.")
@@ -425,6 +528,20 @@ if page=="Dashboard":
     c2.metric("Ready / Near",ready_count)
     c3.metric("In Position",inpos)
     c4.metric("Average Fit",f"{scanner['Fit Score'].mean():.1f}")
+
+    auto_full_dash = st.session_state.get("auto_full_scan", pd.DataFrame())
+    if not auto_full_dash.empty:
+        st.subheader("Smart AUTO Highlights")
+        auto_high = auto_full_dash[
+            (auto_full_dash["Fit Score"] >= min_fit) &
+            (auto_full_dash["Setup"].isin(["READY TO BUY","NEAR ENTRY","IN POSITION"]))
+        ].head(10)
+        if not auto_high.empty:
+            st.dataframe(
+                auto_high[["Rank","Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Profit Factor","Alpha %"]].round(2),
+                use_container_width=True,
+                hide_index=True
+            )
 
     st.subheader("Top Opportunities")
     cols=["Rank","Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Trades","Win Rate %","Profit Factor","Expectancy %","Max DD %","Trend"]
@@ -442,16 +559,79 @@ if page=="Dashboard":
 
 elif page=="Scanner":
     st.subheader("Scanner")
-    st.caption("Default scanner memakai universe ringan. Gunakan Custom Batch untuk memilih saham dari seluruh IDX Stock Master tanpa mengubah universe utama.")
+    st.caption("V5 memisahkan PRE-FILTER ringan dan FULL BO ANALYSIS. Jadi 951 saham tidak langsung dibacktest sekaligus.")
 
-    with st.expander("Custom Batch Scanner"):
+    tab_auto, tab_batch, tab_main = st.tabs(["Smart AUTO Scanner","Custom Batch","Main Universe"])
+
+    with tab_auto:
+        st.markdown("### Step 1 — Pre-filter seluruh Stock Master")
+        st.caption(
+            "Pre-filter memakai recent price, liquidity, ATR, dan EMA trend. "
+            "Hasilnya hanya shortlist kandidat untuk analisis BO penuh."
+        )
+
+        run_pre = st.button("Run Smart Pre-filter", type="primary")
+        if run_pre:
+            with st.spinner("Pre-filtering IDX stock master..."):
+                prefilter = quick_prefilter_idx(
+                    tuple(idx_master["code"].tolist()),
+                    auto_price_min,
+                    auto_liq_min_b,
+                    auto_atr_min,
+                    auto_history_days,
+                    auto_prefilter_limit,
+                )
+            st.session_state["auto_prefilter"] = prefilter
+
+        prefilter = st.session_state.get("auto_prefilter", pd.DataFrame())
+        if not prefilter.empty:
+            c1,c2,c3 = st.columns(3)
+            c1.metric("Stock Master", len(idx_master))
+            c2.metric("Candidates", len(prefilter))
+            c3.metric("Top Pre Score", f"{prefilter['Pre Score'].max():.1f}")
+
+            st.dataframe(prefilter.round(2), use_container_width=True, hide_index=True)
+
+            st.markdown("### Step 2 — Full BO 4/4 analysis")
+            full_count = st.slider(
+                "How many top candidates to fully backtest?",
+                10, min(100, len(prefilter)), min(30, len(prefilter)), 5
+            )
+            run_full = st.button("Run Full BO Scanner")
+
+            if run_full:
+                selected_candidates = prefilter["Ticker"].head(full_count).tolist()
+                auto_full = full_auto_scan(
+                    tuple(selected_candidates),
+                    left, right, data_start, str(backtest_start.date())
+                )
+                st.session_state["auto_full_scan"] = auto_full
+
+            auto_full = st.session_state.get("auto_full_scan", pd.DataFrame())
+            if not auto_full.empty:
+                st.success(f"Full BO analysis completed for {len(auto_full)} stocks.")
+                auto_view = auto_full[auto_full["Fit Score"] >= min_fit].copy()
+                st.dataframe(auto_view.round(2), use_container_width=True, hide_index=True)
+
+                st.markdown("#### Action Board")
+                action_board = auto_view[
+                    auto_view["Setup"].isin(["READY TO BUY","NEAR ENTRY","IN POSITION","WAIT"])
+                ][[
+                    "Rank","Ticker","Setup","Fit Score","Close","Pivot High",
+                    "Distance Entry %","Setup Risk %","Trades","Profit Factor",
+                    "Expectancy %","Alpha %","Max DD %","Trend"
+                ]]
+                st.dataframe(action_board.round(2), use_container_width=True, hide_index=True)
+
+    with tab_batch:
+        st.caption("Pilih saham manual dari Stock Master untuk scanner batch.")
         batch_labels = st.multiselect(
             "Choose stocks from IDX master",
             idx_master["label"].tolist(),
             default=[],
-            help="Sebaiknya 10–50 saham per batch agar stabil di Streamlit Free."
+            help="Sebaiknya 10–50 saham per batch agar stabil."
         )
-        batch_limit = st.slider("Maximum stocks per batch", 5, 100, 30, 5)
+        batch_limit = st.slider("Maximum stocks per batch", 5, 100, 30, 5, key="batch_limit")
         run_batch = st.button("Run Custom Batch")
 
         if run_batch and batch_labels:
@@ -468,11 +648,18 @@ elif page=="Scanner":
                 st.success(f"Scanned {len(custom_df)} stocks")
                 st.dataframe(custom_df.round(2), use_container_width=True, hide_index=True)
 
-    st.divider()
-    st.subheader("Main Scanner Universe")
-    status_filter=st.multiselect("Setup filter",sorted(scanner["Setup"].dropna().unique()),default=sorted(scanner["Setup"].dropna().unique()))
-    view=scanner[(scanner["Setup"].isin(status_filter))&(scanner["Fit Score"]>=min_fit)]
-    st.dataframe(view.round(2),use_container_width=True,hide_index=True)
+    with tab_main:
+        st.caption("Universe scanner rutin dari AUTO / MANUAL / AUTO+MANUAL di sidebar.")
+        status_filter = st.multiselect(
+            "Setup filter",
+            sorted(scanner["Setup"].dropna().unique()),
+            default=sorted(scanner["Setup"].dropna().unique())
+        )
+        view = scanner[
+            (scanner["Setup"].isin(status_filter)) &
+            (scanner["Fit Score"] >= min_fit)
+        ]
+        st.dataframe(view.round(2), use_container_width=True, hide_index=True)
 
 elif page=="Universe":
     st.subheader("Universe")
