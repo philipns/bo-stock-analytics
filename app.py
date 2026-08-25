@@ -11,7 +11,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v9.2",
+    page_title="BO Stock Analytics v10",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -19,31 +19,273 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.block-container {padding-top: 1rem; padding-bottom: 2rem;}
-[data-testid="stMetric"] {
-    background: #151515;
-    border: 1px solid #343434;
-    padding: 12px;
-    border-radius: 10px;
+:root {
+    --bg: #F7F8FC;
+    --surface: #FFFFFF;
+    --surface-2: #F1F3F9;
+    --sidebar: #F3F1FB;
+    --ink: #1D2433;
+    --muted: #7A8193;
+    --border: #E5E8F0;
+    --violet: #7258F5;
+    --violet-2: #8B74FF;
+    --teal: #11A88D;
+    --green: #22A06B;
+    --amber: #E69A18;
+    --red: #D84A5B;
+    --blue: #3182CE;
+    --shadow: 0 8px 28px rgba(45, 55, 85, 0.08);
 }
-div[data-testid="stDataFrame"] {border: 1px solid #333; border-radius: 8px;}
-.bo-pill {display:inline-block;padding:5px 9px;border-radius:999px;font-weight:700;font-size:.82rem;margin-right:5px;}
-.ready{background:#123c27;color:#6ee7a8}
-.near{background:#2d3b13;color:#bef264}
-.position{background:#15324a;color:#7dd3fc}
-.wait{background:#2d2d2d;color:#e5e7eb}
-.risk{background:#4a2b12;color:#fdba74}
-.avoid{background:#481a1a;color:#fca5a5}
-.small-note{font-size:.85rem;color:#9ca3af}
-div.stButton > button {
-    border-radius: 10px;
-    min-height: 42px;
+
+/* ----- App shell ----- */
+html, body, [class*="css"] {
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
+.stApp {
+    background: var(--bg);
+    color: var(--ink);
+}
+.block-container {
+    padding-top: 1.5rem;
+    padding-bottom: 3rem;
+    max-width: 1500px;
+}
+[data-testid="stHeader"] {
+    background: rgba(247,248,252,0.88);
+    backdrop-filter: blur(10px);
+}
+
+/* ----- Sidebar ----- */
 [data-testid="stSidebar"] {
-    min-width: 310px;
+    background: linear-gradient(180deg, #F5F2FF 0%, #F8F8FC 100%);
+    border-right: 1px solid var(--border);
+    min-width: 300px;
 }
+[data-testid="stSidebar"] > div:first-child {
+    padding-top: 1.25rem;
+}
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+    color: var(--ink);
+}
+[data-testid="stSidebar"] [role="radiogroup"] label {
+    background: transparent;
+    padding: 0.25rem 0;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+    color: var(--violet);
+    font-weight: 700;
+}
+
+/* ----- Product header ----- */
+.bo-hero {
+    background: linear-gradient(135deg, #FFFFFF 0%, #F7F4FF 58%, #EFFCF9 100%);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    border-radius: 24px;
+    padding: 24px 28px;
+    margin-bottom: 18px;
+}
+.bo-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: .78rem;
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--violet);
+    background: #EEEAFE;
+    padding: 7px 10px;
+    border-radius: 999px;
+}
+.bo-title {
+    font-size: clamp(1.8rem, 4vw, 2.7rem);
+    line-height: 1.06;
+    font-weight: 800;
+    color: var(--ink);
+    margin: 14px 0 6px 0;
+}
+.bo-subtitle {
+    color: var(--muted);
+    font-size: .98rem;
+    margin: 0;
+}
+
+/* ----- Section typography ----- */
+h1, h2, h3 {
+    color: var(--ink);
+    letter-spacing: -0.02em;
+}
+h2 {
+    margin-top: 1.4rem !important;
+}
+p, label, .stCaption {
+    color: var(--muted);
+}
+
+/* ----- Metric cards ----- */
 [data-testid="stMetric"] {
-    min-height: 110px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 16px 18px;
+    border-radius: 18px;
+    min-height: 114px;
+    box-shadow: 0 5px 18px rgba(40,48,75,.055);
+}
+[data-testid="stMetricLabel"] {
+    color: var(--muted);
+    font-weight: 650;
+}
+[data-testid="stMetricValue"] {
+    color: var(--ink);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+}
+[data-testid="stMetricDelta"] svg {
+    display: none;
+}
+
+/* ----- Buttons ----- */
+div.stButton > button,
+div[data-testid="stDownloadButton"] > button {
+    border-radius: 12px;
+    min-height: 42px;
+    border: 1px solid var(--border);
+    background: #FFFFFF;
+    color: var(--ink);
+    font-weight: 700;
+    box-shadow: 0 3px 10px rgba(43,50,75,.045);
+    transition: all .15s ease;
+}
+div.stButton > button:hover,
+div[data-testid="stDownloadButton"] > button:hover {
+    border-color: #CFC8FF;
+    color: var(--violet);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 18px rgba(83,66,170,.10);
+}
+div.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, var(--violet), var(--violet-2));
+    border-color: transparent;
+    color: white;
+}
+
+/* ----- Inputs ----- */
+[data-baseweb="input"] > div,
+[data-baseweb="select"] > div,
+[data-testid="stNumberInput"] input,
+[data-testid="stTextInput"] input,
+[data-testid="stDateInput"] input {
+    background: var(--surface) !important;
+    border-color: var(--border) !important;
+    border-radius: 12px !important;
+}
+[data-testid="stExpander"] {
+    background: rgba(255,255,255,.72);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+}
+
+/* ----- Tabs ----- */
+[data-baseweb="tab-list"] {
+    gap: 8px;
+    background: transparent;
+    border-bottom: 1px solid var(--border);
+}
+[data-baseweb="tab"] {
+    border-radius: 10px 10px 0 0;
+    font-weight: 700;
+    color: var(--muted);
+}
+[aria-selected="true"][data-baseweb="tab"] {
+    color: var(--violet);
+    background: #F0EDFF;
+}
+
+/* ----- Dataframes ----- */
+div[data-testid="stDataFrame"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(40,48,75,.045);
+}
+
+/* ----- Alerts ----- */
+[data-testid="stAlert"] {
+    border-radius: 14px;
+    border-width: 1px;
+}
+
+/* ----- Status pills ----- */
+.bo-pill {
+    display:inline-block;
+    padding:6px 10px;
+    border-radius:999px;
+    font-weight:800;
+    font-size:.78rem;
+    margin-right:5px;
+    letter-spacing:.01em;
+}
+.ready{background:#DFF7ED;color:#08795F}
+.near{background:#E8F7E7;color:#247B3A}
+.position{background:#E4F0FF;color:#2469A6}
+.wait{background:#FFF4D8;color:#9A6700}
+.risk{background:#FFF0E5;color:#B05F17}
+.avoid{background:#FFE9EC;color:#A82F42}
+.small-note{font-size:.85rem;color:var(--muted)}
+
+/* ----- Modern cards / utility ----- */
+.bo-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    box-shadow: 0 5px 18px rgba(40,48,75,.05);
+    padding: 16px 18px;
+}
+.bo-card-title {
+    color: var(--muted);
+    font-size: .78rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 4px;
+}
+.bo-card-value {
+    color: var(--ink);
+    font-size: 1.35rem;
+    font-weight: 800;
+}
+.bo-soft {
+    background: #F3F0FF;
+    border: 1px solid #E7E1FF;
+    color: #5C47C9;
+    border-radius: 14px;
+    padding: 12px 14px;
+}
+hr {
+    border-color: var(--border) !important;
+}
+
+/* ----- Plotly container ----- */
+[data-testid="stPlotlyChart"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 8px;
+    box-shadow: 0 5px 18px rgba(40,48,75,.045);
+}
+
+/* ----- Hide default footer/menu visual noise ----- */
+footer {visibility: hidden;}
+#MainMenu {visibility: hidden;}
+
+@media (max-width: 900px) {
+    .block-container {padding-left: 1rem; padding-right: 1rem;}
+    [data-testid="stMetric"] {min-height: 104px; padding: 13px;}
+    .bo-hero {padding: 20px;}
 }
 </style>
 """, unsafe_allow_html=True)
@@ -130,6 +372,38 @@ def go_to(page_name, ticker=None):
     # Queue the destination and apply it at the start of the next rerun.
     st.session_state.pending_nav_page = page_name
     st.rerun()
+
+
+def apply_modern_plotly_layout(fig, height=None, yaxis_title=None):
+    fig.update_layout(
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        font=dict(color="#465064", family="Inter, Arial, sans-serif"),
+        margin=dict(l=18, r=18, t=42, b=24),
+        hoverlabel=dict(bgcolor="#1D2433", font_color="#FFFFFF"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0
+        )
+    )
+    if height is not None:
+        fig.update_layout(height=height)
+    fig.update_xaxes(
+        showgrid=False,
+        zeroline=False,
+        linecolor="#E8EAF1",
+        tickfont=dict(color="#737B8C")
+    )
+    fig.update_yaxes(
+        gridcolor="#EFF1F6",
+        zerolinecolor="#DDE1EA",
+        tickfont=dict(color="#737B8C"),
+        title=yaxis_title
+    )
+    return fig
 
 def normalize_ticker(t):
     t = str(t).strip().upper()
@@ -564,7 +838,7 @@ def status_badge(status):
 
 # SIDEBAR
 st.sidebar.markdown("## BO Stock Analytics")
-st.sidebar.caption("Opportunity → Analyze → Portfolio → Monitor")
+st.sidebar.caption("Discover · Analyze · Build · Monitor")
 
 nav_options = ["Dashboard","Scanner","Stock Detail","Portfolio","Watchlist","Universe","Stock Master"]
 
@@ -838,15 +1112,25 @@ if st.sidebar.button("↻ Refresh Main Scanner", use_container_width=True):
         pass
     st.rerun()
 
-st.title("BO Stock Analytics v9.2")
-st.caption("Opportunity Radar • Stock Analysis • Personal Portfolio • IDX Benchmark")
+st.markdown(
+    f"""
+    <div class="bo-hero">
+        <span class="bo-eyebrow">BO STOCK ANALYTICS · V10</span>
+        <div class="bo-title">Build conviction before the breakout.</div>
+        <p class="bo-subtitle">
+            Opportunity Radar · Stock Detail · Personal Portfolio · Buy & Hold · IHSG Benchmark
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 crumb1, crumb2, crumb3, crumb4 = st.columns([1,1,1,3])
-if crumb1.button("🏠 Dashboard", use_container_width=True, key="topnav_dashboard"):
+if crumb1.button("Dashboard", use_container_width=True, key="topnav_dashboard"):
     go_to("Dashboard")
-if crumb2.button("🔥 Radar", use_container_width=True, key="topnav_radar"):
+if crumb2.button("Opportunity Radar", use_container_width=True, key="topnav_radar"):
     go_to("Scanner")
-if crumb3.button("💼 Portfolio", use_container_width=True, key="topnav_portfolio"):
+if crumb3.button("Portfolio", use_container_width=True, key="topnav_portfolio"):
     go_to("Portfolio")
 crumb4.caption(f"Current context: {st.session_state.selected_stock.replace('.JK','')}")
 
@@ -948,7 +1232,7 @@ if page=="Dashboard":
             )
 
 elif page=="Scanner":
-    st.subheader("Scanner — Breakout Radar")
+    st.subheader("Opportunity Radar")
     st.caption("Cari setup baru, lalu buka Stock Detail tanpa mengetik ticker ulang.")
     st.caption("V6 memprioritaskan setup BARU: READY → NEAR → WATCH. IN POSITION dipisahkan agar tidak menutupi peluang entry baru.")
 
@@ -1144,7 +1428,8 @@ elif page=="Scanner":
                 st.success(f"{drill_ticker} added to Watchlist.")
 
 elif page=="Universe":
-    st.subheader("Universe Filter & Diagnostics")
+    st.subheader("Universe Filters")
+    st.caption("See exactly which AUTO filters are active and why a stock passes or fails.")
     st.caption(
         "AUTO Universe berasal dari 951 IDX Stock Master lalu disaring oleh rule di bawah. "
         "Manual Portfolio tetap bebas dan tidak mengikuti filter ini."
@@ -1263,7 +1548,7 @@ elif page=="Stock Master":
             go_to("Stock Detail", master_code_from_label(sm_label))
 
 elif page=="Stock Detail":
-    st.subheader("Stock Detail — Search Any IDX Ticker")
+    st.subheader("Stock Analysis")
     st.info("Pilih saham dari IDX Stock Master atau ketik ticker manual. Analisis dilakukan on-demand sehingga Stock Detail tidak dibatasi scanner universe.")
 
     search_mode = st.radio("Search method", ["IDX Stock Master","Manual ticker"], horizontal=True)
@@ -1384,6 +1669,7 @@ elif page=="Stock Detail":
                 legend=dict(orientation="h"),
                 hovermode="x unified"
             )
+            apply_modern_plotly_layout(fig, height=620)
             st.plotly_chart(fig,use_container_width=True)
 
             st.subheader("Cumulative Return % — BO vs Buy & Hold vs IHSG")
@@ -1438,6 +1724,7 @@ elif page=="Stock Detail":
                     hovermode="x unified",
                     legend=dict(orientation="h")
                 )
+                apply_modern_plotly_layout(ret_fig, height=500, yaxis_title="Cumulative Return (%)")
                 st.plotly_chart(ret_fig, use_container_width=True)
 
                 final_returns = {
@@ -1521,7 +1808,8 @@ elif page=="Watchlist":
         st.info("Watchlist masih kosong.")
 
 elif page=="Portfolio":
-    st.subheader("Portfolio Builder")
+    st.subheader("Portfolio Studio")
+    st.caption("Build a personal basket, compare BO Strategy vs Buy & Hold, and benchmark it against IHSG.")
     st.caption(
         "Portfolio manual benar-benar personal: pilih saham dari seluruh 951 IDX Stock Master. "
         "Saham dapat ditambahkan tanpa harus lolos filter AUTO."
@@ -1762,6 +2050,7 @@ elif page=="Portfolio":
                         hovermode="x unified",
                         legend=dict(orientation="h")
                     )
+                    apply_modern_plotly_layout(pfig, height=520, yaxis_title="Cumulative Return (%)")
                     st.plotly_chart(pfig,use_container_width=True)
 
                     final_port = {
