@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v6",
+    page_title="BO Stock Analytics v6.1",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -354,7 +354,8 @@ def analyze_stock(ticker, left, right, data_start, backtest_start, near_pct=3.0)
     if pd.notna(dist) and dist >= 0:
         distance_score = clamp((max(near_pct*2,6.0)-dist)/max(near_pct*2,6.0)*40, 0, 40)
     trend_score = 15 if close > stats["EMA200"] else 0
-    ema_rising = len(ema) > 20 and ema.iloc[-1] > ema.iloc[-21]
+    ema_series = bt["Close"].ewm(span=200, adjust=False).mean()
+    ema_rising = len(ema_series) > 20 and ema_series.iloc[-1] > ema_series.iloc[-21]
     trend_score += 10 if ema_rising else 0
     fit_component = clamp(stats["Fit Score"],0,100) * 0.25
     liq_component = clamp(stats["Liquidity B/day"]/50*10,0,10) if pd.notna(stats["Liquidity B/day"]) else 0
@@ -540,7 +541,7 @@ def scan_universe(universe_tuple,left,right,data_start,backtest_start_str):
 
 scanner=scan_universe(tuple(universe),left,right,data_start,str(backtest_start.date()))
 
-st.title("BO Stock Analytics v6")
+st.title("BO Stock Analytics v6.1")
 st.caption("IDX Breakout Radar • 951-stock master • Pivot 4/4 • Opportunity-first scanner • Python/Yahoo Finance")
 
 if page in ["Dashboard","Scanner","Universe","Portfolio"] and scanner.empty:
