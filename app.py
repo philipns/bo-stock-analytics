@@ -11,7 +11,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v8.1",
+    page_title="BO Stock Analytics v8.2",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -547,11 +547,34 @@ initial_capital = st.sidebar.number_input("Initial Capital (IDR)",min_value=1_00
 min_fit = st.sidebar.slider("Minimum Fit Score",0,100,45)
 max_positions = st.sidebar.number_input("Max Positions",min_value=1,max_value=20,value=5,step=1)
 
-st.sidebar.markdown("### AUTO Scanner Filter")
+st.sidebar.markdown("### AUTO Universe Filters")
+
+use_price_filter = st.sidebar.checkbox("Use Minimum Price Filter", value=True)
 auto_price_min = st.sidebar.number_input("Minimum Price", min_value=0.0, value=100.0, step=50.0)
+
+use_liquidity_filter = st.sidebar.checkbox("Use Liquidity Filter", value=True)
 auto_liq_min_b = st.sidebar.number_input("Minimum Avg Value / Day (Rp B)", min_value=0.0, value=5.0, step=5.0)
+
+use_atr_filter = st.sidebar.checkbox("Use ATR Filter", value=True)
 auto_atr_min = st.sidebar.number_input("Minimum ATR %", min_value=0.0, value=1.0, step=0.25)
+
+use_ema_filter = st.sidebar.checkbox("Require Price Above EMA200", value=True)
+use_ema_slope_filter = st.sidebar.checkbox("Require EMA200 Rising", value=True)
+
+use_history_filter = st.sidebar.checkbox("Use Minimum History Filter", value=True)
 auto_history_days = st.sidebar.number_input("Minimum Trading Days", min_value=60, value=200, step=20)
+
+st.sidebar.markdown("### Breakout Proximity Filter")
+use_pivot_distance_filter = st.sidebar.checkbox("Filter by Distance to Pivot High", value=True)
+pivot_distance_min = st.sidebar.number_input(
+    "Minimum Distance to Breakout %", min_value=0.0, value=0.0, step=0.25,
+    help="0% berarti harga belum melewati pivot. Nilai negatif tidak digunakan pada AUTO fresh-setup filter."
+)
+pivot_distance_max = st.sidebar.number_input(
+    "Maximum Distance to Breakout %", min_value=0.1, value=5.0, step=0.5,
+    help="Contoh 5% berarti hanya saham yang berada 0–5% di bawah Pivot High yang lolos."
+)
+
 auto_prefilter_limit = st.sidebar.slider("Max Candidates After Pre-filter", 20, 250, 100, 10)
 
 backtest_start_input = st.sidebar.date_input("Backtest Start",value=pd.Timestamp("2017-08-20"))
@@ -576,16 +599,36 @@ data_start="2005-01-01"
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def quick_prefilter_idx(master_codes_tuple, price_min, liq_min_b, atr_min_pct, min_days, max_candidates):
+def quick_prefilter_idx(
+    master_codes_tuple,
+    left,
+    right,
+    price_min,
+    liq_min_b,
+    atr_min_pct,
+    min_days,
+    max_candidates,
+    use_price_filter=True,
+    use_liquidity_filter=True,
+    use_atr_filter=True,
+    use_ema_filter=True,
+    use_ema_slope_filter=True,
+    use_history_filter=True,
+    use_pivot_distance_filter=True,
+    pivot_distance_min=0.0,
+    pivot_distance_max=5.0,
+):
     """
-    Fast pre-filter using only recent data.
-    This is intentionally lighter than full historical BO backtest.
+    Transparent AUTO Universe pre-filter.
+    Returns PASS candidates plus diagnostic columns including Filter Reason.
+    Distance to Pivot High:
+        distance_pct = (PivotHigh - Close) / Close * 100
+    Fresh breakout candidates are normally 0..max % below Pivot High.
     """
     rows = []
     tickers = [normalize_ticker(x) for x in master_codes_tuple if x]
     tickers = [x for x in tickers if x]
 
-    # Process in chunks to reduce Yahoo request overhead / failure risk.
     chunk_size = 60
     for start in range(0, len(tickers), chunk_size):
         chunk = tickers[start:start+chunk_size]
@@ -612,36 +655,73 @@ def quick_prefilter_idx(master_codes_tuple, price_min, liq_min_b, atr_min_pct, m
 
                 if d.empty or "Close" not in d.columns:
                     continue
+
                 d = d[["Open","High","Low","Close","Volume"]].dropna()
-                if len(d) < min_days:
-                    continue
+                reasons = []
+
+                if use_history_filter and len(d) < min_days:
+                    reasons.append(f"History < {min_days}d")
+                    # Cannot calculate reliable EMA/pivots, but retain diagnostic row only if enough bars for basics.
+                    if len(d) < max(left + right + 20, 60):
+                        continue
 
                 close = float(d["Close"].iloc[-1])
-                if close < price_min:
-                    continue
+
+                if use_price_filter and close < price_min:
+                    reasons.append(f"Price < {price_min:g}")
 
                 avg_value_b = float((d["Close"] * d["Volume"]).tail(20).mean() / 1e9)
-                if avg_value_b < liq_min_b:
-                    continue
+                if use_liquidity_filter and avg_value_b < liq_min_b:
+                    reasons.append(f"Liquidity < Rp{liq_min_b:g}B/day")
 
                 atr_pct_now = float(atr(d, 14).iloc[-1] / close * 100)
-                if pd.isna(atr_pct_now) or atr_pct_now < atr_min_pct:
-                    continue
+                if use_atr_filter and (pd.isna(atr_pct_now) or atr_pct_now < atr_min_pct):
+                    reasons.append(f"ATR < {atr_min_pct:g}%")
 
                 ema200 = d["Close"].ewm(span=200, adjust=False).mean()
                 ema_now = float(ema200.iloc[-1])
-                ema_rising = len(ema200) > 20 and ema200.iloc[-1] > ema200.iloc[-21]
                 above_ema = close > ema_now
+                ema_rising = len(ema200) > 20 and ema200.iloc[-1] > ema200.iloc[-21]
 
-                # Lightweight score only for candidate ordering.
+                if use_ema_filter and not above_ema:
+                    reasons.append("Below EMA200")
+                if use_ema_slope_filter and not ema_rising:
+                    reasons.append("EMA200 Not Rising")
+
+                # Pine-like confirmed pivot on recent data.
+                pbt = pine_like_pivots(d, int(left), int(right))
+                pivot_high = float(pbt["pivotHigh"].iloc[-1]) if pd.notna(pbt["pivotHigh"].iloc[-1]) else np.nan
+                pivot_low = float(pbt["pivotLow"].iloc[-1]) if pd.notna(pbt["pivotLow"].iloc[-1]) else np.nan
+                distance_pct = ((pivot_high - close) / close * 100.0) if pd.notna(pivot_high) and close > 0 else np.nan
+
+                if use_pivot_distance_filter:
+                    if pd.isna(distance_pct):
+                        reasons.append("No Valid Pivot High")
+                    elif distance_pct < pivot_distance_min:
+                        reasons.append("Already Above / Too Close Past Pivot")
+                    elif distance_pct > pivot_distance_max:
+                        reasons.append(f"Distance > {pivot_distance_max:g}%")
+
                 trend_score = (10 if above_ema else 0) + (10 if ema_rising else 0)
                 liq_score = clamp(avg_value_b / 50.0 * 10.0, 0, 10)
                 atr_score = clamp(atr_pct_now / 3.0 * 10.0, 0, 10)
-                pre_score = trend_score + liq_score + atr_score
+
+                if pd.notna(distance_pct) and distance_pct >= 0:
+                    proximity_score = clamp((pivot_distance_max - distance_pct) / max(pivot_distance_max, 0.1) * 20.0, 0, 20)
+                else:
+                    proximity_score = 0.0
+
+                pre_score = trend_score + liq_score + atr_score + proximity_score
+                passed = len(reasons) == 0
 
                 rows.append({
                     "Ticker": ticker.replace(".JK",""),
+                    "Pass": passed,
+                    "Filter Reason": "PASS" if passed else " | ".join(reasons),
                     "Close": close,
+                    "Pivot High": pivot_high,
+                    "Pivot Low": pivot_low,
+                    "Distance to Breakout %": distance_pct,
                     "Avg Value B/day": avg_value_b,
                     "ATR %": atr_pct_now,
                     "Above EMA200": above_ema,
@@ -652,15 +732,19 @@ def quick_prefilter_idx(master_codes_tuple, price_min, liq_min_b, atr_min_pct, m
                 continue
 
     if not rows:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
-    out = pd.DataFrame(rows)
-    out = out.sort_values(
-        ["Pre Score","Avg Value B/day"],
-        ascending=[False,False]
+    all_results = pd.DataFrame(rows)
+    passed = all_results[all_results["Pass"]].copy()
+    passed = passed.sort_values(
+        ["Pre Score","Distance to Breakout %","Avg Value B/day"],
+        ascending=[False,True,False]
     ).head(max_candidates).reset_index(drop=True)
-    out.insert(0,"Pre Rank",np.arange(1,len(out)+1))
-    return out
+
+    if not passed.empty:
+        passed.insert(0, "Pre Rank", np.arange(1, len(passed)+1))
+
+    return passed, all_results.reset_index(drop=True)
 
 @st.cache_data(ttl=3600, show_spinner="Running full BO analysis...")
 def full_auto_scan(candidate_tuple, left, right, data_start, backtest_start_str):
@@ -707,8 +791,8 @@ if st.sidebar.button("↻ Refresh Main Scanner", use_container_width=True):
         pass
     st.rerun()
 
-st.title("BO Stock Analytics v8.1")
-st.caption("IDX Opportunity Radar • Candlestick • 0%-based Return Comparison • Portfolio vs B&H vs IHSG • Pivot 4/4")
+st.title("BO Stock Analytics v8.2")
+st.caption("IDX Opportunity Radar • Transparent Universe Filters • Pivot Distance Filter • Portfolio Benchmark • Pivot 4/4")
 
 scanner_available = not scanner.empty
 if not scanner_available and page in ["Dashboard","Scanner","Universe","Portfolio"]:
@@ -782,22 +866,38 @@ elif page=="Scanner":
         run_pre = st.button("Run Smart Pre-filter", type="primary")
         if run_pre:
             with st.spinner("Pre-filtering IDX stock master..."):
-                prefilter = quick_prefilter_idx(
+                prefilter, diagnostics = quick_prefilter_idx(
                     tuple(idx_master["code"].tolist()),
+                    left,
+                    right,
                     auto_price_min,
                     auto_liq_min_b,
                     auto_atr_min,
                     auto_history_days,
                     auto_prefilter_limit,
+                    use_price_filter,
+                    use_liquidity_filter,
+                    use_atr_filter,
+                    use_ema_filter,
+                    use_ema_slope_filter,
+                    use_history_filter,
+                    use_pivot_distance_filter,
+                    pivot_distance_min,
+                    pivot_distance_max,
                 )
             st.session_state["auto_prefilter"] = prefilter
+            st.session_state["universe_filter_diagnostics"] = diagnostics
 
         prefilter = st.session_state.get("auto_prefilter", pd.DataFrame())
         if not prefilter.empty:
-            c1,c2,c3 = st.columns(3)
+            c1,c2,c3,c4 = st.columns(4)
             c1.metric("Stock Master", len(idx_master))
-            c2.metric("Candidates", len(prefilter))
+            c2.metric("Passed Universe", len(prefilter))
             c3.metric("Top Pre Score", f"{prefilter['Pre Score'].max():.1f}")
+            c4.metric(
+                "Breakout Distance",
+                f"{pivot_distance_min:g}–{pivot_distance_max:g}%" if use_pivot_distance_filter else "OFF"
+            )
 
             st.dataframe(prefilter.round(2), use_container_width=True, hide_index=True)
 
@@ -926,22 +1026,77 @@ elif page=="Scanner":
                 st.dataframe(view.round(2),use_container_width=True,hide_index=True)
 
 elif page=="Universe":
-    st.subheader("Universe")
-    st.write(f"Mode aktif: **{universe_mode}**")
-    st.caption("Universe di sini hanya mengatur sumber scanner rutin. Portfolio personal dibangun di halaman Portfolio dari seluruh 951 saham IDX.")
-    if scanner.empty:
-        st.warning("Data analitik Main Universe belum tersedia. Daftar ticker tetap ditampilkan.")
-        st.dataframe(
-            pd.DataFrame({"Ticker":[x.replace(".JK","") for x in universe]}),
-            use_container_width=True,
-            hide_index=True
-        )
+    st.subheader("Universe Filter & Diagnostics")
+    st.caption(
+        "AUTO Universe berasal dari 951 IDX Stock Master lalu disaring oleh rule di bawah. "
+        "Manual Portfolio tetap bebas dan tidak mengikuti filter ini."
+    )
+
+    st.markdown("### Active AUTO Universe Rules")
+    rule_rows = [
+        {"Filter":"Minimum Price","Enabled":use_price_filter,"Rule":f"Close ≥ {auto_price_min:g}"},
+        {"Filter":"Liquidity","Enabled":use_liquidity_filter,"Rule":f"Avg Value/day ≥ Rp{auto_liq_min_b:g}B"},
+        {"Filter":"ATR","Enabled":use_atr_filter,"Rule":f"ATR ≥ {auto_atr_min:g}%"},
+        {"Filter":"EMA200","Enabled":use_ema_filter,"Rule":"Close > EMA200"},
+        {"Filter":"EMA200 Slope","Enabled":use_ema_slope_filter,"Rule":"EMA200 Rising"},
+        {"Filter":"History","Enabled":use_history_filter,"Rule":f"Trading days ≥ {auto_history_days}"},
+        {
+            "Filter":"Distance to Pivot High",
+            "Enabled":use_pivot_distance_filter,
+            "Rule":f"{pivot_distance_min:g}% ≤ Distance ≤ {pivot_distance_max:g}%"
+        },
+    ]
+    st.dataframe(pd.DataFrame(rule_rows),use_container_width=True,hide_index=True)
+
+    st.info(
+        "Distance to Breakout = (Pivot High − Current Close) / Current Close × 100. "
+        "Contoh 2% berarti harga masih 2% di bawah level breakout."
+    )
+
+    diagnostics = st.session_state.get("universe_filter_diagnostics", pd.DataFrame())
+    passed_universe = st.session_state.get("auto_prefilter", pd.DataFrame())
+
+    if diagnostics.empty:
+        st.warning("Jalankan Scanner → Smart AUTO Scanner → Run Smart Pre-filter untuk melihat PASS/FAIL seluruh saham.")
     else:
-        st.dataframe(
-            scanner[["Rank","Ticker","Setup","Setup Score","Fit Score","Strategy Return %","Buy&Hold %","Alpha %","Max DD %","Trades","Win Rate %","Profit Factor"]].round(2),
-            use_container_width=True,
-            hide_index=True
-        )
+        passed_count = int(diagnostics["Pass"].sum())
+        failed_count = len(diagnostics) - passed_count
+        c1,c2,c3 = st.columns(3)
+        c1.metric("Stocks Checked",len(diagnostics))
+        c2.metric("PASS",passed_count)
+        c3.metric("FAIL",failed_count)
+
+        tab_pass, tab_fail, tab_all = st.tabs(["✅ PASS Universe","❌ Failed + Reason","All Diagnostics"])
+
+        with tab_pass:
+            if passed_universe.empty:
+                st.info("Tidak ada saham yang lolos rule saat ini.")
+            else:
+                cols=[
+                    "Pre Rank","Ticker","Close","Pivot High","Distance to Breakout %",
+                    "Avg Value B/day","ATR %","Above EMA200","EMA200 Rising","Pre Score"
+                ]
+                st.dataframe(
+                    passed_universe[[c for c in cols if c in passed_universe.columns]].round(2),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+        with tab_fail:
+            failed=diagnostics[~diagnostics["Pass"]].copy()
+            st.dataframe(
+                failed[[
+                    c for c in [
+                        "Ticker","Filter Reason","Close","Pivot High","Distance to Breakout %",
+                        "Avg Value B/day","ATR %","Above EMA200","EMA200 Rising"
+                    ] if c in failed.columns
+                ]].round(2),
+                use_container_width=True,
+                hide_index=True
+            )
+
+        with tab_all:
+            st.dataframe(diagnostics.round(2),use_container_width=True,hide_index=True)
 
 elif page=="Stock Master":
     st.subheader("IDX Stock Master")
