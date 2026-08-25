@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v5",
+    page_title="BO Stock Analytics v6",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -330,20 +330,45 @@ def analyze_stock(ticker, left, right, data_start, backtest_start, near_pct=3.0)
     setup_risk = (ph-pl)/ph*100 if pd.notna(ph) and pd.notna(pl) and ph>0 else np.nan
     extension = (close/stats["EMA200"]-1)*100 if stats["EMA200"] else np.nan
 
-    if running: setup="IN POSITION"
-    elif stats["Fit Score"]<45: setup="AVOID"
-    elif pd.notna(extension) and extension>15: setup="OVEREXTENDED"
-    elif pd.notna(setup_risk) and setup_risk>10: setup="HIGH RISK"
-    elif bool(bt["breakoutBull"].iloc[-1]): setup="READY TO BUY"
-    elif pd.notna(dist) and 0<=dist<=near_pct: setup="NEAR ENTRY"
-    else: setup="WAIT"
+    # Opportunity-first status. Running positions are separated from fresh opportunities.
+    if running:
+        setup="IN POSITION"
+    elif stats["Fit Score"]<45:
+        setup="AVOID"
+    elif pd.notna(extension) and extension>15:
+        setup="OVEREXTENDED"
+    elif pd.notna(setup_risk) and setup_risk>10:
+        setup="HIGH RISK"
+    elif bool(bt["breakoutBull"].iloc[-1]):
+        setup="READY TO BUY"
+    elif pd.notna(dist) and 0<=dist<=near_pct:
+        setup="NEAR ENTRY"
+    elif pd.notna(dist) and near_pct<dist<=max(near_pct*2, 6.0):
+        setup="WATCH"
+    else:
+        setup="NOT READY"
+
+    # Setup Score ranks CURRENT opportunity, while Fit Score measures historical quality.
+    # Distance is intentionally the largest component so the radar surfaces actionable setups.
+    distance_score = 0.0
+    if pd.notna(dist) and dist >= 0:
+        distance_score = clamp((max(near_pct*2,6.0)-dist)/max(near_pct*2,6.0)*40, 0, 40)
+    trend_score = 15 if close > stats["EMA200"] else 0
+    ema_rising = len(ema) > 20 and ema.iloc[-1] > ema.iloc[-21]
+    trend_score += 10 if ema_rising else 0
+    fit_component = clamp(stats["Fit Score"],0,100) * 0.25
+    liq_component = clamp(stats["Liquidity B/day"]/50*10,0,10) if pd.notna(stats["Liquidity B/day"]) else 0
+    risk_penalty = 10 if pd.notna(setup_risk) and setup_risk>8 else 0
+    setup_score = clamp(distance_score + trend_score + fit_component + liq_component - risk_penalty, 0, 100)
+    if setup == "READY TO BUY":
+        setup_score = max(setup_score, 95)
 
     wins = trades[trades["Return %"]>0] if not trades.empty else pd.DataFrame()
     wr = len(wins)/len(trades)*100 if len(trades) else np.nan
     avg_hold = trades["Holding Days"].mean() if len(trades) else np.nan
 
     result = {
-        "Ticker":ticker.replace(".JK",""),"Setup":setup,"Fit Score":stats["Fit Score"],
+        "Ticker":ticker.replace(".JK",""),"Setup":setup,"Setup Score":setup_score,"Fit Score":stats["Fit Score"],
         "Close":close,"Pivot High":ph,"Pivot Low":pl,"Distance Entry %":dist,
         "Setup Risk %":setup_risk,"Trades":len(trades),"Win Rate %":wr,
         "Profit Factor":stats["Profit Factor"],"Expectancy %":stats["Expectancy %"],
@@ -359,8 +384,8 @@ def analyze_stock(ticker, left, right, data_start, backtest_start, near_pct=3.0)
 
 def status_badge(status):
     cls = {
-        "READY TO BUY":"ready","NEAR ENTRY":"near","IN POSITION":"position",
-        "WAIT":"wait","HIGH RISK":"risk","OVEREXTENDED":"risk","AVOID":"avoid"
+        "READY TO BUY":"ready","NEAR ENTRY":"near","WATCH":"near","IN POSITION":"position",
+        "NOT READY":"wait","WAIT":"wait","HIGH RISK":"risk","OVEREXTENDED":"risk","AVOID":"avoid"
     }.get(status,"wait")
     return f'<span class="bo-pill {cls}">{status}</span>'
 
@@ -507,25 +532,27 @@ def scan_universe(universe_tuple,left,right,data_start,backtest_start_str):
             pass
     df=pd.DataFrame(rows)
     if not df.empty:
-        df=df.sort_values(["Fit Score","Distance Entry %"],ascending=[False,True]).reset_index(drop=True)
+        priority={"READY TO BUY":0,"NEAR ENTRY":1,"WATCH":2,"IN POSITION":3,"NOT READY":4,"WAIT":4,"HIGH RISK":5,"OVEREXTENDED":6,"AVOID":7}
+        df["_priority"]=df["Setup"].map(priority).fillna(9)
+        df=df.sort_values(["_priority","Setup Score","Distance Entry %","Fit Score"],ascending=[True,False,True,False],na_position="last").drop(columns="_priority").reset_index(drop=True)
         df.insert(0,"Rank",np.arange(1,len(df)+1))
     return df
 
 scanner=scan_universe(tuple(universe),left,right,data_start,str(backtest_start.date()))
 
-st.title("BO Stock Analytics v5")
-st.caption("IDX smart scanner • 951-stock master • Pre-filter → BO 4/4 full analysis • Python/Yahoo Finance")
+st.title("BO Stock Analytics v6")
+st.caption("IDX Breakout Radar • 951-stock master • Pivot 4/4 • Opportunity-first scanner • Python/Yahoo Finance")
 
 if page in ["Dashboard","Scanner","Universe","Portfolio"] and scanner.empty:
     st.error("Scanner data unavailable. Try another universe or refresh later.")
     st.stop()
 
 if page=="Dashboard":
-    ready_count=int(scanner["Setup"].isin(["READY TO BUY","NEAR ENTRY"]).sum())
+    ready_count=int(scanner["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"]).sum())
     inpos=int((scanner["Setup"]=="IN POSITION").sum())
     c1,c2,c3,c4=st.columns(4)
     c1.metric("Scanner Universe",len(scanner))
-    c2.metric("Ready / Near",ready_count)
+    c2.metric("Radar Candidates",ready_count)
     c3.metric("In Position",inpos)
     c4.metric("Average Fit",f"{scanner['Fit Score'].mean():.1f}")
 
@@ -558,8 +585,8 @@ if page=="Dashboard":
         st.dataframe(pd.DataFrame(wrows)[["Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Profit Factor","Alpha %"]].round(2),use_container_width=True,hide_index=True)
 
 elif page=="Scanner":
-    st.subheader("Scanner")
-    st.caption("V5 memisahkan PRE-FILTER ringan dan FULL BO ANALYSIS. Jadi 951 saham tidak langsung dibacktest sekaligus.")
+    st.subheader("Scanner — Breakout Radar")
+    st.caption("V6 memprioritaskan setup BARU: READY → NEAR → WATCH. IN POSITION dipisahkan agar tidak menutupi peluang entry baru.")
 
     tab_auto, tab_batch, tab_main = st.tabs(["Smart AUTO Scanner","Custom Batch","Main Universe"])
 
@@ -613,15 +640,22 @@ elif page=="Scanner":
                 auto_view = auto_full[auto_full["Fit Score"] >= min_fit].copy()
                 st.dataframe(auto_view.round(2), use_container_width=True, hide_index=True)
 
-                st.markdown("#### Action Board")
-                action_board = auto_view[
-                    auto_view["Setup"].isin(["READY TO BUY","NEAR ENTRY","IN POSITION","WAIT"])
-                ][[
-                    "Rank","Ticker","Setup","Fit Score","Close","Pivot High",
-                    "Distance Entry %","Setup Risk %","Trades","Profit Factor",
-                    "Expectancy %","Alpha %","Max DD %","Trend"
-                ]]
-                st.dataframe(action_board.round(2), use_container_width=True, hide_index=True)
+                st.markdown("#### Breakout Radar")
+                radar_tab, new_tab, pos_tab = st.tabs(["🔥 READY / NEAR / WATCH","⚡ New Breakouts","🔵 Active Positions"])
+                radar_cols=["Rank","Ticker","Setup","Setup Score","Fit Score","Close","Pivot High","Distance Entry %","Setup Risk %","Trades","Win Rate %","Profit Factor","Expectancy %","Trend"]
+                with radar_tab:
+                    radar=auto_view[auto_view["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"])].copy()
+                    radar=radar.sort_values(["Setup Score","Distance Entry %"],ascending=[False,True],na_position="last")
+                    if radar.empty: st.info("Belum ada READY / NEAR / WATCH pada batch ini. Coba tambah jumlah Full BO candidates atau longgarkan pre-filter.")
+                    else: st.dataframe(radar[radar_cols].round(2),use_container_width=True,hide_index=True)
+                with new_tab:
+                    fresh=auto_view[auto_view["Setup"]=="READY TO BUY"].copy()
+                    if fresh.empty: st.info("Belum ada breakout baru pada candle terbaru.")
+                    else: st.dataframe(fresh[radar_cols].round(2),use_container_width=True,hide_index=True)
+                with pos_tab:
+                    active=auto_view[auto_view["Setup"]=="IN POSITION"].copy()
+                    if active.empty: st.info("Tidak ada posisi strategy yang sedang aktif pada batch ini.")
+                    else: st.dataframe(active[radar_cols].round(2),use_container_width=True,hide_index=True)
 
     with tab_batch:
         st.caption("Pilih saham manual dari Stock Master untuk scanner batch.")
@@ -655,11 +689,17 @@ elif page=="Scanner":
             sorted(scanner["Setup"].dropna().unique()),
             default=sorted(scanner["Setup"].dropna().unique())
         )
-        view = scanner[
-            (scanner["Setup"].isin(status_filter)) &
-            (scanner["Fit Score"] >= min_fit)
-        ]
-        st.dataframe(view.round(2), use_container_width=True, hide_index=True)
+        view = scanner[(scanner["Setup"].isin(status_filter)) & (scanner["Fit Score"] >= min_fit)].copy()
+        rtab, ptab, alltab = st.tabs(["🔥 Opportunity Radar","🔵 In Position","All Results"])
+        with rtab:
+            rv=view[view["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"])].copy()
+            if rv.empty: st.info("Belum ada fresh setup di Main Universe.")
+            else: st.dataframe(rv.round(2),use_container_width=True,hide_index=True)
+        with ptab:
+            pv=view[view["Setup"]=="IN POSITION"].copy()
+            st.dataframe(pv.round(2),use_container_width=True,hide_index=True) if not pv.empty else st.info("Tidak ada posisi aktif.")
+        with alltab:
+            st.dataframe(view.round(2),use_container_width=True,hide_index=True)
 
 elif page=="Universe":
     st.subheader("Universe")
