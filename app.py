@@ -7,9 +7,10 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import requests
 from io import StringIO
+from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v3",
+    page_title="BO Stock Analytics v4",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -45,44 +46,56 @@ DEFAULT_AUTO = [
 
 # =========================================================
 # IDX STOCK MASTER
-# Source priority: KSEI Shares page (live), fallback to default list.
+# Primary source: public GitHub CSV mirror of IDX issuer list.
+# This avoids scraping KSEI/IDX on every Streamlit restart.
 # =========================================================
+MASTER_URL = "https://raw.githubusercontent.com/wildangunawan/Dataset-Saham-IDX/master/List%20Emiten/all.csv"
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def load_idx_stock_master():
-    url = "https://web.ksei.co.id/services/registered-securities/shares"
+    # 1) Local repository snapshot if present.
+    local_path = Path("idx_stock_master.csv")
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        html = requests.get(url, headers=headers, timeout=20)
-        html.raise_for_status()
-        tables = pd.read_html(StringIO(html.text))
-        candidates = []
-        for tbl in tables:
-            cols = [str(c).strip().lower() for c in tbl.columns]
-            if "code" in cols and "description" in cols:
-                temp = tbl.copy()
-                temp.columns = cols
-                temp = temp[["code","description"]].dropna()
-                temp["code"] = temp["code"].astype(str).str.strip().str.upper()
-                temp["description"] = temp["description"].astype(str).str.strip()
-                temp = temp[temp["code"].str.match(r"^[A-Z]{4}$", na=False)]
-                candidates.append(temp)
-        if candidates:
-            master = pd.concat(candidates, ignore_index=True).drop_duplicates("code")
-            master = master.sort_values("code").reset_index(drop=True)
-            master["ticker"] = master["code"] + ".JK"
-            master["label"] = master["code"] + " — " + master["description"]
-            return master
+        if local_path.exists():
+            local = pd.read_csv(local_path)
+            if {"code","name"}.issubset(local.columns) and len(local) > 100:
+                master = local.copy()
+                master["code"] = master["code"].astype(str).str.strip().str.upper()
+                master["name"] = master["name"].astype(str).str.strip()
+                master["ticker"] = master["code"] + ".JK"
+                master["label"] = master["code"] + " — " + master["name"]
+                return master.sort_values("code").drop_duplicates("code").reset_index(drop=True), "LOCAL CSV"
+
     except Exception:
         pass
 
+    # 2) Stable public CSV hosted on GitHub.
+    try:
+        master = pd.read_csv(MASTER_URL)
+        if {"code","name"}.issubset(master.columns):
+            master["code"] = master["code"].astype(str).str.strip().str.upper()
+            master["name"] = master["name"].astype(str).str.strip()
+            master = master[master["code"].str.match(r"^[A-Z0-9]{4,5}$", na=False)]
+            master["ticker"] = master["code"] + ".JK"
+            master["label"] = master["code"] + " — " + master["name"]
+            master = master.sort_values("code").drop_duplicates("code").reset_index(drop=True)
+            if len(master) > 100:
+                return master, "GITHUB CSV"
+    except Exception:
+        pass
+
+    # 3) Last-resort fallback so app stays usable.
     fallback_codes = sorted(set([x.replace(".JK","") for x in DEFAULT_AUTO]))
     master = pd.DataFrame({
         "code": fallback_codes,
-        "description": ["Fallback stock master"] * len(fallback_codes)
+        "name": ["Fallback stock master"] * len(fallback_codes),
+        "listingDate": [None] * len(fallback_codes),
+        "shares": [None] * len(fallback_codes),
+        "listingBoard": [None] * len(fallback_codes),
     })
     master["ticker"] = master["code"] + ".JK"
-    master["label"] = master["code"] + " — " + master["description"]
-    return master
+    master["label"] = master["code"] + " — " + master["name"]
+    return master, "FALLBACK"
 
 def master_code_from_label(label):
     return str(label).split(" — ")[0].strip().upper()
@@ -366,8 +379,8 @@ manual_text = st.sidebar.text_area("Manual Tickers",value="ANTM, INCO, ADRO, PTB
 manual = [normalize_ticker(x) for x in manual_text.replace("\n",",").split(",")]
 manual = [x for x in manual if x]
 
-idx_master = load_idx_stock_master()
-st.sidebar.caption(f"IDX Stock Master: {len(idx_master)} codes")
+idx_master, master_source = load_idx_stock_master()
+st.sidebar.caption(f"IDX Stock Master: {len(idx_master)} codes • {master_source}")
 
 if universe_mode=="MANUAL":
     universe=manual
@@ -397,8 +410,8 @@ def scan_universe(universe_tuple,left,right,data_start,backtest_start_str):
 
 scanner=scan_universe(tuple(universe),left,right,data_start,str(backtest_start.date()))
 
-st.title("BO Stock Analytics v3")
-st.caption("IDX breakout research • Searchable stock master • Pivot 4/4 baseline • Python/Yahoo Finance")
+st.title("BO Stock Analytics v4")
+st.caption("IDX breakout research • Repository-backed Stock Master • Pivot 4/4 • Python/Yahoo Finance")
 
 if page in ["Dashboard","Scanner","Universe","Portfolio"] and scanner.empty:
     st.error("Scanner data unavailable. Try another universe or refresh later.")
@@ -469,12 +482,13 @@ elif page=="Universe":
 
 elif page=="Stock Master":
     st.subheader("IDX Stock Master")
-    st.caption("Daftar saham untuk pencarian. Sumber utama: halaman Shares KSEI; bila sumber tidak dapat diakses, aplikasi memakai fallback list.")
+    st.caption("Master emiten untuk pencarian seluruh saham. Primary source adalah CSV repository, sehingga tidak perlu scraping KSEI saat aplikasi dibuka.")
 
-    c1,c2,c3 = st.columns(3)
+    c1,c2,c3,c4 = st.columns(4)
     c1.metric("Stock Codes Loaded", len(idx_master))
-    c2.metric("Scanner Universe", len(universe))
-    c3.metric("Watchlist", len(st.session_state.watchlist))
+    c2.metric("Master Source", master_source)
+    c3.metric("Scanner Universe", len(universe))
+    c4.metric("Watchlist", len(st.session_state.watchlist))
 
     query = st.text_input("Search code / company name", placeholder="Contoh: ANTM, Petrosea, Bank")
     master_view = idx_master.copy()
@@ -482,18 +496,24 @@ elif page=="Stock Master":
         q = query.strip().lower()
         master_view = master_view[
             master_view["code"].str.lower().str.contains(q, na=False) |
-            master_view["description"].str.lower().str.contains(q, na=False)
+            master_view["name"].str.lower().str.contains(q, na=False)
         ]
 
+    display_cols = [c for c in ["code","name","listingDate","listingBoard"] if c in master_view.columns]
     st.dataframe(
-        master_view[["code","description"]].head(500),
+        master_view[display_cols].head(1000),
         use_container_width=True,
         hide_index=True
     )
 
+    if master_source == "FALLBACK":
+        st.error("Full master gagal dimuat. Aplikasi sedang memakai fallback list.")
+    else:
+        st.success(f"Stock Master loaded from {master_source}.")
+
     st.info(
         "Stock Master hanya daftar pencarian. Scanner rutin sengaja memakai subset agar dashboard tetap cepat. "
-        "Untuk analisis saham apa pun, buka Stock Detail."
+        "Untuk analisis saham apa pun, buka Stock Detail atau pilih Custom Batch di Scanner."
     )
 
 elif page=="Stock Detail":
