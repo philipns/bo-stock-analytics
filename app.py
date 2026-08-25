@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v6.1",
+    page_title="BO Stock Analytics v6.2",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -521,7 +521,7 @@ def full_auto_scan(candidate_tuple, left, right, data_start, backtest_start_str)
         left, right, data_start, backtest_start_str
     )
 
-@st.cache_data(ttl=3600,show_spinner="Scanning universe...")
+@st.cache_data(ttl=300,show_spinner="Scanning universe...")
 def scan_universe(universe_tuple,left,right,data_start,backtest_start_str):
     rows=[]
     for ticker in universe_tuple:
@@ -541,50 +541,83 @@ def scan_universe(universe_tuple,left,right,data_start,backtest_start_str):
 
 scanner=scan_universe(tuple(universe),left,right,data_start,str(backtest_start.date()))
 
-st.title("BO Stock Analytics v6.1")
-st.caption("IDX Breakout Radar • 951-stock master • Pivot 4/4 • Opportunity-first scanner • Python/Yahoo Finance")
+# Automatic one-time retry for transient Yahoo/cache failures.
+if scanner.empty:
+    try:
+        scan_universe.clear()
+        scanner=scan_universe(tuple(universe),left,right,data_start,str(backtest_start.date()))
+    except Exception:
+        scanner=pd.DataFrame()
 
-if page in ["Dashboard","Scanner","Universe","Portfolio"] and scanner.empty:
-    st.error("Scanner data unavailable. Try another universe or refresh later.")
-    st.stop()
+# Manual recovery control. It also clears per-stock Yahoo cache.
+if st.sidebar.button("↻ Refresh Main Scanner", use_container_width=True):
+    try:
+        scan_universe.clear()
+        download_stock.clear()
+        full_auto_scan.clear()
+    except Exception:
+        pass
+    st.rerun()
+
+st.title("BO Stock Analytics v6.2")
+st.caption("IDX Breakout Radar • 951-stock master • Pivot 4/4 • Opportunity-first scanner • resilient page loading")
+
+scanner_available = not scanner.empty
+if not scanner_available and page in ["Dashboard","Scanner","Universe","Portfolio"]:
+    st.warning(
+        "Main Scanner belum berhasil dimuat. Page lain tetap dapat digunakan. "
+        "Tekan 'Refresh Main Scanner' di sidebar atau jalankan Smart AUTO Scanner."
+    )
 
 if page=="Dashboard":
-    ready_count=int(scanner["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"]).sum())
-    inpos=int((scanner["Setup"]=="IN POSITION").sum())
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("Scanner Universe",len(scanner))
-    c2.metric("Radar Candidates",ready_count)
-    c3.metric("In Position",inpos)
-    c4.metric("Average Fit",f"{scanner['Fit Score'].mean():.1f}")
+    if scanner.empty:
+        st.subheader("Dashboard")
+        st.info(
+            "Main Scanner belum tersedia, tetapi Stock Master, Stock Detail, Watchlist, "
+            "dan Smart AUTO Scanner tetap aktif."
+        )
+        st.markdown("### Quick Access")
+        c1,c2,c3 = st.columns(3)
+        c1.metric("IDX Stock Master", len(idx_master))
+        c2.metric("Watchlist", len(st.session_state.watchlist))
+        pre_tmp = st.session_state.get("auto_prefilter", pd.DataFrame())
+        c3.metric("AUTO Candidates", len(pre_tmp) if not pre_tmp.empty else 0)
+    else:
+        ready_count=int(scanner["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"]).sum())
+        inpos=int((scanner["Setup"]=="IN POSITION").sum())
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("Scanner Universe",len(scanner))
+        c2.metric("Radar Candidates",ready_count)
+        c3.metric("In Position",inpos)
+        c4.metric("Average Fit",f"{scanner['Fit Score'].mean():.1f}")
 
-    auto_full_dash = st.session_state.get("auto_full_scan", pd.DataFrame())
-    if not auto_full_dash.empty:
-        st.subheader("Smart AUTO Highlights")
-        auto_high = auto_full_dash[
-            (auto_full_dash["Fit Score"] >= min_fit) &
-            (auto_full_dash["Setup"].isin(["READY TO BUY","NEAR ENTRY","IN POSITION"]))
-        ].head(10)
-        if not auto_high.empty:
-            st.dataframe(
-                auto_high[["Rank","Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Profit Factor","Alpha %"]].round(2),
-                use_container_width=True,
-                hide_index=True
-            )
+        auto_full_dash = st.session_state.get("auto_full_scan", pd.DataFrame())
+        if not auto_full_dash.empty:
+            st.subheader("Smart AUTO Highlights")
+            auto_high = auto_full_dash[
+                (auto_full_dash["Fit Score"] >= min_fit) &
+                (auto_full_dash["Setup"].isin(["READY TO BUY","NEAR ENTRY","IN POSITION"]))
+            ].head(10)
+            if not auto_high.empty:
+                st.dataframe(
+                    auto_high[["Rank","Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Profit Factor","Alpha %"]].round(2),
+                    use_container_width=True,
+                    hide_index=True
+                )
 
-    st.subheader("Top Opportunities")
-    cols=["Rank","Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Trades","Win Rate %","Profit Factor","Expectancy %","Max DD %","Trend"]
-    st.dataframe(scanner[cols].head(12).round(2),use_container_width=True,hide_index=True)
+        st.subheader("Top Opportunities")
+        cols=["Rank","Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Trades","Win Rate %","Profit Factor","Expectancy %","Max DD %","Trend"]
+        st.dataframe(scanner[cols].head(12).round(2),use_container_width=True,hide_index=True)
 
-    st.subheader("Watchlist")
-    wrows=[]
-    for t in st.session_state.watchlist:
-        try:
-            r=analyze_stock(t,left,right,data_start,backtest_start)
-            if r: wrows.append({k:v for k,v in r.items() if not k.startswith("_")})
-        except: pass
-    if wrows:
-        st.dataframe(pd.DataFrame(wrows)[["Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Profit Factor","Alpha %"]].round(2),use_container_width=True,hide_index=True)
-
+        st.subheader("Watchlist")
+        wrows=[]
+        for t in st.session_state.watchlist:
+            try:
+                r=analyze_stock(t,left,right,data_start,backtest_start)
+                if r: wrows.append({k:v for k,v in r.items() if not k.startswith("_")})
+            except: pass
+        if wrows:
+            st.dataframe(pd.DataFrame(wrows)[["Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Profit Factor","Alpha %"]].round(2),use_container_width=True,hide_index=True)
 elif page=="Scanner":
     st.subheader("Scanner — Breakout Radar")
     st.caption("V6 memprioritaskan setup BARU: READY → NEAR → WATCH. IN POSITION dipisahkan agar tidak menutupi peluang entry baru.")
@@ -685,28 +718,48 @@ elif page=="Scanner":
 
     with tab_main:
         st.caption("Universe scanner rutin dari AUTO / MANUAL / AUTO+MANUAL di sidebar.")
-        status_filter = st.multiselect(
-            "Setup filter",
-            sorted(scanner["Setup"].dropna().unique()),
-            default=sorted(scanner["Setup"].dropna().unique())
-        )
-        view = scanner[(scanner["Setup"].isin(status_filter)) & (scanner["Fit Score"] >= min_fit)].copy()
-        rtab, ptab, alltab = st.tabs(["🔥 Opportunity Radar","🔵 In Position","All Results"])
-        with rtab:
-            rv=view[view["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"])].copy()
-            if rv.empty: st.info("Belum ada fresh setup di Main Universe.")
-            else: st.dataframe(rv.round(2),use_container_width=True,hide_index=True)
-        with ptab:
-            pv=view[view["Setup"]=="IN POSITION"].copy()
-            st.dataframe(pv.round(2),use_container_width=True,hide_index=True) if not pv.empty else st.info("Tidak ada posisi aktif.")
-        with alltab:
-            st.dataframe(view.round(2),use_container_width=True,hide_index=True)
+        if scanner.empty:
+            st.warning("Main Universe belum termuat. Gunakan tombol Refresh Main Scanner di sidebar.")
+            st.dataframe(
+                pd.DataFrame({"Configured Ticker":[x.replace(".JK","") for x in universe]}),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            status_filter = st.multiselect(
+                "Setup filter",
+                sorted(scanner["Setup"].dropna().unique()),
+                default=sorted(scanner["Setup"].dropna().unique())
+            )
+            view = scanner[(scanner["Setup"].isin(status_filter)) & (scanner["Fit Score"] >= min_fit)].copy()
+            rtab, ptab, alltab = st.tabs(["🔥 Opportunity Radar","🔵 In Position","All Results"])
+            with rtab:
+                rv=view[view["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"])].copy()
+                if rv.empty: st.info("Belum ada fresh setup di Main Universe.")
+                else: st.dataframe(rv.round(2),use_container_width=True,hide_index=True)
+            with ptab:
+                pv=view[view["Setup"]=="IN POSITION"].copy()
+                st.dataframe(pv.round(2),use_container_width=True,hide_index=True) if not pv.empty else st.info("Tidak ada posisi aktif.")
+            with alltab:
+                st.dataframe(view.round(2),use_container_width=True,hide_index=True)
 
 elif page=="Universe":
     st.subheader("Universe")
     st.write(f"Mode aktif: **{universe_mode}**")
     st.caption("Scanner Universe adalah subset untuk ranking rutin. Stock Detail tidak dibatasi oleh daftar ini.")
-    st.dataframe(scanner[["Rank","Ticker","Setup","Fit Score","Strategy Return %","Buy&Hold %","Alpha %","Max DD %","Trades","Win Rate %","Profit Factor"]].round(2),use_container_width=True,hide_index=True)
+    if scanner.empty:
+        st.warning("Data analitik Main Universe belum tersedia. Daftar ticker tetap ditampilkan.")
+        st.dataframe(
+            pd.DataFrame({"Ticker":[x.replace(".JK","") for x in universe]}),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.dataframe(
+            scanner[["Rank","Ticker","Setup","Setup Score","Fit Score","Strategy Return %","Buy&Hold %","Alpha %","Max DD %","Trades","Win Rate %","Profit Factor"]].round(2),
+            use_container_width=True,
+            hide_index=True
+        )
 
 elif page=="Stock Master":
     st.subheader("IDX Stock Master")
@@ -847,8 +900,19 @@ elif page=="Watchlist":
 
 elif page=="Portfolio":
     st.subheader("Portfolio Research")
-    qualified=scanner[scanner["Fit Score"]>=min_fit].copy()
-    selected_names=st.multiselect("Select stocks",scanner["Ticker"].tolist(),default=qualified["Ticker"].head(max_positions).tolist())
+    if scanner.empty:
+        portfolio_options = list(dict.fromkeys(
+            [x.replace(".JK","") for x in manual] +
+            [x.replace(".JK","") for x in st.session_state.watchlist]
+        ))
+        default_portfolio = portfolio_options[:max_positions]
+        st.info("Main Scanner belum tersedia. Portfolio sementara memakai Manual Tickers + Watchlist.")
+    else:
+        qualified=scanner[scanner["Fit Score"]>=min_fit].copy()
+        portfolio_options=scanner["Ticker"].tolist()
+        default_portfolio=qualified["Ticker"].head(max_positions).tolist()
+
+    selected_names=st.multiselect("Select stocks",portfolio_options,default=default_portfolio)
     if not selected_names:
         st.warning("Pilih minimal satu saham."); st.stop()
 
@@ -863,6 +927,9 @@ elif page=="Portfolio":
         "Alpha %":r["Alpha %"],"BO Max DD %":r["Max DD %"],
         "BuyHold Max DD %":r["Buy&Hold Max DD %"],"PF":r["Profit Factor"]
     } for r in rows])
+    if ptab.empty:
+        st.error("Tidak ada saham portfolio yang berhasil dianalisis saat ini.")
+        st.stop()
     st.dataframe(ptab.round(2),use_container_width=True,hide_index=True)
 
     ihsg=download_stock("^JKSE",data_start)
