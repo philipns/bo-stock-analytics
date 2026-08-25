@@ -4,13 +4,14 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 from datetime import datetime
 import requests
 from io import StringIO
 from pathlib import Path
 
 st.set_page_config(
-    page_title="BO Stock Analytics v7.0",
+    page_title="BO Stock Analytics v8.0",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -257,6 +258,64 @@ def strategy_equity_from_trades(trades, initial=1.0):
         return pd.Series(dtype=float)
     s = pd.Series([v for _,v in vals], index=pd.to_datetime([d for d,_ in vals]))
     return s
+
+
+def build_bo_daily_equity(bt, trades, running, backtest_start, initial_capital=100_000_000):
+    """
+    Reconstructs a daily mark-to-market equity curve for a single stock strategy.
+    Closed trades are applied using actual entry/exit dates from the BO engine.
+    Open trade, if any, is marked to current daily Close.
+    """
+    period = bt[bt.index >= backtest_start].copy()
+    if period.empty:
+        return pd.Series(dtype=float)
+
+    equity = float(initial_capital)
+    curve = pd.Series(index=period.index, dtype=float)
+    position = False
+    shares = 0.0
+    entry_price = np.nan
+
+    trade_events = {}
+    if trades is not None and not trades.empty:
+        for _, tr in trades.iterrows():
+            trade_events.setdefault(pd.Timestamp(tr["Entry Date"]), []).append(("ENTRY", float(tr["Entry Price"])))
+            trade_events.setdefault(pd.Timestamp(tr["Exit Date"]), []).append(("EXIT", float(tr["Exit Price"])))
+
+    if running:
+        trade_events.setdefault(pd.Timestamp(running["Entry Date"]), []).append(("ENTRY", float(running["Entry Price"])))
+
+    for dt, row in period.iterrows():
+        events = trade_events.get(pd.Timestamp(dt), [])
+        for event, price in events:
+            if event == "EXIT" and position:
+                equity = shares * price
+                shares = 0.0
+                position = False
+                entry_price = np.nan
+            elif event == "ENTRY" and not position and price > 0:
+                shares = equity / price
+                position = True
+                entry_price = price
+
+        if position:
+            curve.loc[dt] = shares * float(row["Close"])
+        else:
+            curve.loc[dt] = equity
+
+    return curve.ffill().dropna()
+
+def build_buyhold_curve(price_series, backtest_start, initial_capital=100_000_000):
+    s = price_series[price_series.index >= backtest_start].dropna().copy()
+    if s.empty:
+        return pd.Series(dtype=float)
+    return s / float(s.iloc[0]) * float(initial_capital)
+
+def normalize_curve(curve, initial_capital=100_000_000):
+    curve = curve.dropna()
+    if curve.empty:
+        return curve
+    return curve / float(curve.iloc[0]) * float(initial_capital)
 
 def fit_score_current(bt, trades, backtest_start):
     total = len(trades)
@@ -562,8 +621,8 @@ if st.sidebar.button("↻ Refresh Main Scanner", use_container_width=True):
         pass
     st.rerun()
 
-st.title("BO Stock Analytics v7.0")
-st.caption("IDX Opportunity Radar • 951-stock Personal Portfolio Builder • Pivot 4/4 • AUTO + MANUAL workflow")
+st.title("BO Stock Analytics v8.0")
+st.caption("IDX Opportunity Radar • Candlestick Stock Detail • BO vs Buy & Hold vs IHSG equity curves • Pivot 4/4")
 
 scanner_available = not scanner.empty
 if not scanner_available and page in ["Dashboard","Scanner","Universe","Portfolio"]:
@@ -888,22 +947,166 @@ elif page=="Stock Detail":
                     st.session_state.watchlist.remove(ticker_full)
                     st.success("Removed from watchlist.")
 
-            st.subheader("Price + Pivot Stair")
-            bt=res["_bt"].tail(400)
-            fig,ax=plt.subplots(figsize=(12,5))
-            ax.plot(bt.index,bt["Close"],label="Close")
-            ax.plot(bt.index,bt["pivotHigh"],label="Pivot High")
-            ax.plot(bt.index,bt["pivotLow"],label="Pivot Low")
-            ax.grid(True,alpha=.2); ax.legend()
-            st.pyplot(fig,use_container_width=True)
+            st.subheader("Candlestick + Pivot Stair")
+            chart_bars = st.select_slider(
+                "Chart window",
+                options=[100,200,300,500,800],
+                value=300,
+                key=f"chart_window_{res['Ticker']}"
+            )
+            bt_chart=res["_bt"].tail(chart_bars).copy()
+
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(
+                x=bt_chart.index,
+                open=bt_chart["Open"],
+                high=bt_chart["High"],
+                low=bt_chart["Low"],
+                close=bt_chart["Close"],
+                name="Price",
+                increasing_line_color="#22c55e",
+                decreasing_line_color="#ef4444"
+            ))
+            fig.add_trace(go.Scatter(
+                x=bt_chart.index,
+                y=bt_chart["pivotHigh"],
+                mode="lines",
+                name="Pivot High",
+                line=dict(color="#22d3ee", width=2, shape="hv")
+            ))
+            fig.add_trace(go.Scatter(
+                x=bt_chart.index,
+                y=bt_chart["pivotLow"],
+                mode="lines",
+                name="Pivot Low",
+                line=dict(color="#f97316", width=2, shape="hv")
+            ))
+
+            if res["_running"]:
+                ep = float(res["_running"]["Entry Price"])
+                fig.add_hline(
+                    y=ep,
+                    line_dash="dot",
+                    annotation_text=f"BO Entry {ep:,.0f}",
+                    annotation_position="top left"
+                )
+
+            fig.update_layout(
+                height=620,
+                margin=dict(l=10,r=10,t=35,b=10),
+                xaxis_rangeslider_visible=False,
+                legend=dict(orientation="h"),
+                hovermode="x unified"
+            )
+            st.plotly_chart(fig,use_container_width=True)
+
+            st.subheader("Equity Curve — BO vs Buy & Hold vs IHSG")
+            full_bt = res["_bt"].copy()
+            bo_curve = build_bo_daily_equity(
+                full_bt,
+                res["_trades"],
+                res["_running"],
+                backtest_start,
+                initial_capital
+            )
+            stock_bh_curve = build_buyhold_curve(
+                full_bt["Close"],
+                backtest_start,
+                initial_capital
+            )
+
+            ihsg_df = download_stock("^JKSE", data_start)
+            if not ihsg_df.empty:
+                ihsg_curve = build_buyhold_curve(
+                    ihsg_df["Close"],
+                    backtest_start,
+                    initial_capital
+                )
+            else:
+                ihsg_curve = pd.Series(dtype=float)
+
+            eq_df = pd.concat([
+                bo_curve.rename("BO Strategy"),
+                stock_bh_curve.rename(f"{res['Ticker']} Buy & Hold"),
+                ihsg_curve.rename("IHSG Buy & Hold")
+            ],axis=1).sort_index().ffill().dropna(how="all")
+
+            if eq_df.empty:
+                st.info("Equity curve belum tersedia untuk periode ini.")
+            else:
+                # Align to first common available values and normalize each series independently
+                norm_df = pd.DataFrame(index=eq_df.index)
+                for col in eq_df.columns:
+                    s = eq_df[col].dropna()
+                    if not s.empty:
+                        norm_df[col] = s / float(s.iloc[0]) * float(initial_capital)
+                norm_df = norm_df.ffill()
+
+                eq_fig = go.Figure()
+                for col in norm_df.columns:
+                    eq_fig.add_trace(go.Scatter(
+                        x=norm_df.index,
+                        y=norm_df[col],
+                        mode="lines",
+                        name=col
+                    ))
+                eq_fig.update_layout(
+                    height=500,
+                    margin=dict(l=10,r=10,t=30,b=10),
+                    yaxis_title="Equity (IDR, same starting capital)",
+                    hovermode="x unified",
+                    legend=dict(orientation="h")
+                )
+                st.plotly_chart(eq_fig,use_container_width=True)
+
+                latest = {}
+                for col in norm_df.columns:
+                    s = norm_df[col].dropna()
+                    latest[col] = float(s.iloc[-1]) if not s.empty else np.nan
+
+                ec1,ec2,ec3 = st.columns(3)
+                bo_final = latest.get("BO Strategy",np.nan)
+                bh_final = latest.get(f"{res['Ticker']} Buy & Hold",np.nan)
+                ihsg_final = latest.get("IHSG Buy & Hold",np.nan)
+
+                ec1.metric(
+                    "BO Final Equity",
+                    f"Rp{bo_final/1_000_000:,.1f}M" if pd.notna(bo_final) else "N/A",
+                    f"{(bo_final/initial_capital-1)*100:.1f}%" if pd.notna(bo_final) else None
+                )
+                ec2.metric(
+                    "Stock B&H Final Equity",
+                    f"Rp{bh_final/1_000_000:,.1f}M" if pd.notna(bh_final) else "N/A",
+                    f"{(bh_final/initial_capital-1)*100:.1f}%" if pd.notna(bh_final) else None
+                )
+                ec3.metric(
+                    "IHSG Final Equity",
+                    f"Rp{ihsg_final/1_000_000:,.1f}M" if pd.notna(ihsg_final) else "N/A",
+                    f"{(ihsg_final/initial_capital-1)*100:.1f}%" if pd.notna(ihsg_final) else None
+                )
 
             st.subheader("Breakout Strategy vs Buy & Hold")
+            ihsg_period = download_stock("^JKSE",data_start)
+            ihsg_period = ihsg_period[ihsg_period.index>=backtest_start] if not ihsg_period.empty else ihsg_period
+            ihsg_return=np.nan
+            ihsg_cagr=np.nan
+            ihsg_dd=np.nan
+            if len(ihsg_period)>1:
+                ihsg_return=(ihsg_period["Close"].iloc[-1]/ihsg_period["Close"].iloc[0]-1)*100
+                yrs=(ihsg_period.index[-1]-ihsg_period.index[0]).days/365.25
+                if yrs>0:
+                    ihsg_cagr=((ihsg_period["Close"].iloc[-1]/ihsg_period["Close"].iloc[0])**(1/yrs)-1)*100
+                ihsg_curve_raw=ihsg_period["Close"]/ihsg_period["Close"].iloc[0]
+                ihsg_dd=(ihsg_curve_raw/ihsg_curve_raw.cummax()-1).min()*100
+
             comparison=pd.DataFrame({
                 "Metric":["Total Return %","CAGR %","Max Drawdown %"],
-                "Breakout":[res["Strategy Return %"],res["Strategy CAGR %"],res["Max DD %"]],
-                "Buy & Hold":[res["Buy&Hold %"],res["Buy&Hold CAGR %"],res["Buy&Hold Max DD %"]],
+                "BO Strategy":[res["Strategy Return %"],res["Strategy CAGR %"],res["Max DD %"]],
+                f"{res['Ticker']} Buy & Hold":[res["Buy&Hold %"],res["Buy&Hold CAGR %"],res["Buy&Hold Max DD %"]],
+                "IHSG Buy & Hold":[ihsg_return,ihsg_cagr,ihsg_dd],
             })
-            comparison["BO - B&H"]=comparison["Breakout"]-comparison["Buy & Hold"]
+            comparison["BO vs Stock B&H"]=comparison["BO Strategy"]-comparison[f"{res['Ticker']} Buy & Hold"]
+            comparison["BO vs IHSG"]=comparison["BO Strategy"]-comparison["IHSG Buy & Hold"]
             st.dataframe(comparison.round(2),use_container_width=True,hide_index=True)
 
             st.subheader("Trade Statistics")
