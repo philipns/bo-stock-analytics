@@ -35,6 +35,16 @@ div[data-testid="stDataFrame"] {border: 1px solid #333; border-radius: 8px;}
 .risk{background:#4a2b12;color:#fdba74}
 .avoid{background:#481a1a;color:#fca5a5}
 .small-note{font-size:.85rem;color:#9ca3af}
+div.stButton > button {
+    border-radius: 10px;
+    min-height: 42px;
+}
+[data-testid="stSidebar"] {
+    min-width: 310px;
+}
+[data-testid="stMetric"] {
+    min-height: 110px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -106,6 +116,19 @@ if "watchlist" not in st.session_state:
 
 if "manual_portfolio" not in st.session_state:
     st.session_state.manual_portfolio = []
+
+if "selected_stock" not in st.session_state:
+    st.session_state.selected_stock = "ANTM.JK"
+
+if "nav_page" not in st.session_state:
+    st.session_state.nav_page = "Dashboard"
+
+def go_to(page_name, ticker=None):
+    if ticker:
+        st.session_state.selected_stock = normalize_ticker(ticker)
+    st.session_state.nav_page = page_name
+    st.session_state.sidebar_nav = page_name
+    st.rerun()
 
 def normalize_ticker(t):
     t = str(t).strip().upper()
@@ -539,62 +562,74 @@ def status_badge(status):
     return f'<span class="bo-pill {cls}">{status}</span>'
 
 # SIDEBAR
-st.sidebar.title("BO Stock Settings")
-page = st.sidebar.radio("Page",["Dashboard","Scanner","Universe","Stock Master","Stock Detail","Portfolio","Watchlist"])
-left = st.sidebar.number_input("Pivot Left",min_value=1,value=4,step=1)
-right = st.sidebar.number_input("Pivot Right",min_value=1,value=4,step=1)
-initial_capital = st.sidebar.number_input("Initial Capital (IDR)",min_value=1_000_000,value=100_000_000,step=10_000_000)
-min_fit = st.sidebar.slider("Minimum Fit Score",0,100,45)
-max_positions = st.sidebar.number_input("Max Positions",min_value=1,max_value=20,value=5,step=1)
+st.sidebar.markdown("## BO Stock Analytics")
+st.sidebar.caption("Opportunity → Analyze → Portfolio → Monitor")
 
-st.sidebar.markdown("### AUTO Universe Filters")
-
-use_price_filter = st.sidebar.checkbox("Use Minimum Price Filter", value=True)
-auto_price_min = st.sidebar.number_input("Minimum Price", min_value=0.0, value=100.0, step=50.0)
-
-use_liquidity_filter = st.sidebar.checkbox("Use Liquidity Filter", value=True)
-auto_liq_min_b = st.sidebar.number_input("Minimum Avg Value / Day (Rp B)", min_value=0.0, value=5.0, step=5.0)
-
-use_atr_filter = st.sidebar.checkbox("Use ATR Filter", value=True)
-auto_atr_min = st.sidebar.number_input("Minimum ATR %", min_value=0.0, value=1.0, step=0.25)
-
-use_ema_filter = st.sidebar.checkbox("Require Price Above EMA200", value=True)
-use_ema_slope_filter = st.sidebar.checkbox("Require EMA200 Rising", value=True)
-
-use_history_filter = st.sidebar.checkbox("Use Minimum History Filter", value=True)
-auto_history_days = st.sidebar.number_input("Minimum Trading Days", min_value=60, value=200, step=20)
-
-st.sidebar.markdown("### Breakout Proximity Filter")
-use_pivot_distance_filter = st.sidebar.checkbox("Filter by Distance to Pivot High", value=True)
-pivot_distance_min = st.sidebar.number_input(
-    "Minimum Distance to Breakout %", min_value=0.0, value=0.0, step=0.25,
-    help="0% berarti harga belum melewati pivot. Nilai negatif tidak digunakan pada AUTO fresh-setup filter."
+nav_options = ["Dashboard","Scanner","Stock Detail","Portfolio","Watchlist","Universe","Stock Master"]
+page = st.sidebar.radio(
+    "Navigation",
+    nav_options,
+    index=nav_options.index(st.session_state.nav_page) if st.session_state.nav_page in nav_options else 0,
+    key="sidebar_nav"
 )
-pivot_distance_max = st.sidebar.number_input(
-    "Maximum Distance to Breakout %", min_value=0.1, value=5.0, step=0.5,
-    help="Contoh 5% berarti hanya saham yang berada 0–5% di bawah Pivot High yang lolos."
-)
+st.session_state.nav_page = page
 
-auto_prefilter_limit = st.sidebar.slider("Max Candidates After Pre-filter", 20, 250, 100, 10)
+st.sidebar.divider()
+with st.sidebar.expander("⚙️ Strategy & Scanner Settings", expanded=False):
+    left = st.sidebar.number_input("Pivot Left",min_value=1,value=4,step=1)
+    right = st.sidebar.number_input("Pivot Right",min_value=1,value=4,step=1)
+    initial_capital = st.sidebar.number_input("Initial Capital (IDR)",min_value=1_000_000,value=100_000_000,step=10_000_000)
+    min_fit = st.sidebar.slider("Minimum Fit Score",0,100,45)
+    max_positions = st.sidebar.number_input("Max Positions",min_value=1,max_value=20,value=5,step=1)
 
-backtest_start_input = st.sidebar.date_input("Backtest Start",value=pd.Timestamp("2017-08-20"))
-backtest_start = pd.Timestamp(backtest_start_input)
-universe_mode = st.sidebar.selectbox("Universe Mode",["AUTO","MANUAL","AUTO+MANUAL"])
-manual_text = st.sidebar.text_area("Manual Tickers",value="ANTM, INCO, ADRO, PTBA, BMRI")
-manual = [normalize_ticker(x) for x in manual_text.replace("\n",",").split(",")]
-manual = [x for x in manual if x]
+    st.sidebar.markdown("### AUTO Universe Filters")
 
-idx_master, master_source = load_idx_stock_master()
-st.sidebar.caption(f"IDX Stock Master: {len(idx_master)} codes • {master_source}")
+    use_price_filter = st.sidebar.checkbox("Use Minimum Price Filter", value=True)
+    auto_price_min = st.sidebar.number_input("Minimum Price", min_value=0.0, value=100.0, step=50.0)
 
-if universe_mode=="MANUAL":
-    universe=manual
-elif universe_mode=="AUTO+MANUAL":
-    universe=list(dict.fromkeys(DEFAULT_AUTO+manual))
-else:
-    universe=DEFAULT_AUTO
+    use_liquidity_filter = st.sidebar.checkbox("Use Liquidity Filter", value=True)
+    auto_liq_min_b = st.sidebar.number_input("Minimum Avg Value / Day (Rp B)", min_value=0.0, value=5.0, step=5.0)
 
-st.sidebar.caption(f"{len(universe)} scanner tickers active")
+    use_atr_filter = st.sidebar.checkbox("Use ATR Filter", value=True)
+    auto_atr_min = st.sidebar.number_input("Minimum ATR %", min_value=0.0, value=1.0, step=0.25)
+
+    use_ema_filter = st.sidebar.checkbox("Require Price Above EMA200", value=True)
+    use_ema_slope_filter = st.sidebar.checkbox("Require EMA200 Rising", value=True)
+
+    use_history_filter = st.sidebar.checkbox("Use Minimum History Filter", value=True)
+    auto_history_days = st.sidebar.number_input("Minimum Trading Days", min_value=60, value=200, step=20)
+
+    st.sidebar.markdown("### Breakout Proximity Filter")
+    use_pivot_distance_filter = st.sidebar.checkbox("Filter by Distance to Pivot High", value=True)
+    pivot_distance_min = st.sidebar.number_input(
+        "Minimum Distance to Breakout %", min_value=0.0, value=0.0, step=0.25,
+        help="0% berarti harga belum melewati pivot. Nilai negatif tidak digunakan pada AUTO fresh-setup filter."
+    )
+    pivot_distance_max = st.sidebar.number_input(
+        "Maximum Distance to Breakout %", min_value=0.1, value=5.0, step=0.5,
+        help="Contoh 5% berarti hanya saham yang berada 0–5% di bawah Pivot High yang lolos."
+    )
+
+    auto_prefilter_limit = st.sidebar.slider("Max Candidates After Pre-filter", 20, 250, 100, 10)
+
+    backtest_start_input = st.sidebar.date_input("Backtest Start",value=pd.Timestamp("2017-08-20"))
+    backtest_start = pd.Timestamp(backtest_start_input)
+    universe_mode = st.sidebar.selectbox("Universe Mode",["AUTO","MANUAL","AUTO+MANUAL"])
+    manual_text = st.sidebar.text_area("Manual Tickers",value="ANTM, INCO, ADRO, PTBA, BMRI")
+    manual = [normalize_ticker(x) for x in manual_text.replace("\n",",").split(",")]
+    manual = [x for x in manual if x]
+
+    idx_master, master_source = load_idx_stock_master()
+    st.sidebar.caption(f"IDX Stock Master: {len(idx_master)} codes • {master_source}")
+
+    if universe_mode=="MANUAL":
+        universe=manual
+    elif universe_mode=="AUTO+MANUAL":
+        universe=list(dict.fromkeys(DEFAULT_AUTO+manual))
+    else:
+        universe=DEFAULT_AUTO
+
+    st.sidebar.caption(f"{len(universe)} scanner tickers active")
 data_start="2005-01-01"
 
 
@@ -791,8 +826,17 @@ if st.sidebar.button("↻ Refresh Main Scanner", use_container_width=True):
         pass
     st.rerun()
 
-st.title("BO Stock Analytics v8.2")
-st.caption("IDX Opportunity Radar • Transparent Universe Filters • Pivot Distance Filter • Portfolio Benchmark • Pivot 4/4")
+st.title("BO Stock Analytics v9.0")
+st.caption("Opportunity Radar • Stock Analysis • Personal Portfolio • IDX Benchmark")
+
+crumb1, crumb2, crumb3, crumb4 = st.columns([1,1,1,3])
+if crumb1.button("🏠 Dashboard", use_container_width=True):
+    go_to("Dashboard")
+if crumb2.button("🔥 Radar", use_container_width=True):
+    go_to("Scanner")
+if crumb3.button("💼 Portfolio", use_container_width=True):
+    go_to("Portfolio")
+crumb4.caption(f"Current context: {st.session_state.selected_stock.replace('.JK','')}")
 
 scanner_available = not scanner.empty
 if not scanner_available and page in ["Dashboard","Scanner","Universe","Portfolio"]:
@@ -814,6 +858,14 @@ if page=="Dashboard":
         c2.metric("Watchlist", len(st.session_state.watchlist))
         pre_tmp = st.session_state.get("auto_prefilter", pd.DataFrame())
         c3.metric("AUTO Candidates", len(pre_tmp) if not pre_tmp.empty else 0)
+
+        qa1,qa2,qa3 = st.columns(3)
+        if qa1.button("🔥 Open Opportunity Radar", use_container_width=True, key="dash_empty_radar"):
+            go_to("Scanner")
+        if qa2.button("🔎 Analyze Stock", use_container_width=True, key="dash_empty_detail"):
+            go_to("Stock Detail", st.session_state.selected_stock)
+        if qa3.button("💼 My Portfolio", use_container_width=True, key="dash_empty_port"):
+            go_to("Portfolio")
     else:
         ready_count=int(scanner["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"]).sum())
         inpos=int((scanner["Setup"]=="IN POSITION").sum())
@@ -827,31 +879,65 @@ if page=="Dashboard":
         if not auto_full_dash.empty:
             st.subheader("Smart AUTO Highlights")
             auto_high = auto_full_dash[
-                (auto_full_dash["Fit Score"] >= min_fit) &
-                (auto_full_dash["Setup"].isin(["READY TO BUY","NEAR ENTRY","IN POSITION"]))
-            ].head(10)
+                auto_full_dash["Setup"].isin(["READY TO BUY","NEAR ENTRY","WATCH"])
+            ].sort_values(
+                ["Opportunity Score","Distance Entry %"],
+                ascending=[False,True]
+            ).head(10)
             if not auto_high.empty:
                 st.dataframe(
-                    auto_high[["Rank","Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Profit Factor","Alpha %"]].round(2),
+                    auto_high[[
+                        c for c in [
+                            "Rank","Ticker","Setup","Opportunity Score","Fit Score","Close",
+                            "Pivot High","Distance Entry %","Profit Factor","Alpha %"
+                        ] if c in auto_high.columns
+                    ]].round(2),
                     use_container_width=True,
                     hide_index=True
                 )
 
+        st.subheader("Quick Actions")
+        qa1,qa2,qa3,qa4 = st.columns(4)
+        if qa1.button("🔥 Opportunity Radar", use_container_width=True, key="dash_radar"):
+            go_to("Scanner")
+        if qa2.button("🔎 Analyze Stock", use_container_width=True, key="dash_detail"):
+            go_to("Stock Detail", st.session_state.selected_stock)
+        if qa3.button("💼 My Portfolio", use_container_width=True, key="dash_port"):
+            go_to("Portfolio")
+        if qa4.button("⭐ Watchlist", use_container_width=True, key="dash_watch"):
+            go_to("Watchlist")
+
         st.subheader("Top Opportunities")
         cols=["Rank","Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Trades","Win Rate %","Profit Factor","Expectancy %","Max DD %","Trend"]
         st.dataframe(scanner[cols].head(12).round(2),use_container_width=True,hide_index=True)
+
+        top_tickers = scanner["Ticker"].head(12).tolist()
+        if top_tickers:
+            nd1,nd2 = st.columns([4,1])
+            dashboard_pick = nd1.selectbox("Open stock from Top Opportunities", top_tickers, key="dashboard_pick")
+            if nd2.button("View Detail", use_container_width=True, key="dashboard_view"):
+                go_to("Stock Detail", dashboard_pick)
 
         st.subheader("Watchlist")
         wrows=[]
         for t in st.session_state.watchlist:
             try:
                 r=analyze_stock(t,left,right,data_start,backtest_start)
-                if r: wrows.append({k:v for k,v in r.items() if not k.startswith("_")})
-            except: pass
+                if r:
+                    wrows.append({k:v for k,v in r.items() if not k.startswith("_")})
+            except Exception:
+                pass
         if wrows:
-            st.dataframe(pd.DataFrame(wrows)[["Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Profit Factor","Alpha %"]].round(2),use_container_width=True,hide_index=True)
+            wdash = pd.DataFrame(wrows)
+            st.dataframe(
+                wdash[["Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Profit Factor","Alpha %"]].round(2),
+                use_container_width=True,
+                hide_index=True
+            )
+
 elif page=="Scanner":
     st.subheader("Scanner — Breakout Radar")
+    st.caption("Cari setup baru, lalu buka Stock Detail tanpa mengetik ticker ulang.")
     st.caption("V6 memprioritaskan setup BARU: READY → NEAR → WATCH. IN POSITION dipisahkan agar tidak menutupi peluang entry baru.")
 
     tab_auto, tab_batch, tab_main = st.tabs(["Smart AUTO Scanner","Custom Batch","Main Universe"])
@@ -1025,6 +1111,26 @@ elif page=="Scanner":
             with alltab:
                 st.dataframe(view.round(2),use_container_width=True,hide_index=True)
 
+
+    st.divider()
+    drill_candidates = []
+    auto_full_drill = st.session_state.get("auto_full_scan", pd.DataFrame())
+    if not auto_full_drill.empty:
+        drill_candidates = auto_full_drill["Ticker"].dropna().astype(str).tolist()
+    elif not scanner.empty:
+        drill_candidates = scanner["Ticker"].dropna().astype(str).tolist()
+
+    if drill_candidates:
+        d1,d2,d3 = st.columns([4,1,1])
+        drill_ticker = d1.selectbox("Open stock analysis", list(dict.fromkeys(drill_candidates)), key="scanner_drill")
+        if d2.button("Stock Detail", use_container_width=True, key="scanner_detail"):
+            go_to("Stock Detail", drill_ticker)
+        if d3.button("Add Watch", use_container_width=True, key="scanner_watch"):
+            nt = normalize_ticker(drill_ticker)
+            if nt not in st.session_state.watchlist:
+                st.session_state.watchlist.append(nt)
+                st.success(f"{drill_ticker} added to Watchlist.")
+
 elif page=="Universe":
     st.subheader("Universe Filter & Diagnostics")
     st.caption(
@@ -1081,6 +1187,10 @@ elif page=="Universe":
                     use_container_width=True,
                     hide_index=True
                 )
+                up1,up2 = st.columns([4,1])
+                upick = up1.selectbox("Open PASS stock", passed_universe["Ticker"].tolist(), key="universe_pick")
+                if up2.button("View Detail", use_container_width=True, key="universe_detail"):
+                    go_to("Stock Detail", upick)
 
         with tab_fail:
             failed=diagnostics[~diagnostics["Pass"]].copy()
@@ -1134,6 +1244,12 @@ elif page=="Stock Master":
         "Untuk analisis saham apa pun, buka Stock Detail atau pilih Custom Batch di Scanner."
     )
 
+    if not master_view.empty:
+        sm1,sm2 = st.columns([4,1])
+        sm_label = sm1.selectbox("Open from Stock Master", master_view["label"].tolist(), key="master_open")
+        if sm2.button("Analyze", use_container_width=True, key="master_analyze"):
+            go_to("Stock Detail", master_code_from_label(sm_label))
+
 elif page=="Stock Detail":
     st.subheader("Stock Detail — Search Any IDX Ticker")
     st.info("Pilih saham dari IDX Stock Master atau ketik ticker manual. Analisis dilakukan on-demand sehingga Stock Detail tidak dibatasi scanner universe.")
@@ -1141,8 +1257,10 @@ elif page=="Stock Detail":
     search_mode = st.radio("Search method", ["IDX Stock Master","Manual ticker"], horizontal=True)
 
     if search_mode == "IDX Stock Master":
-        default_idx = 0
         labels = idx_master["label"].tolist()
+        current_code = st.session_state.selected_stock.replace(".JK","")
+        matching = [i for i,x in enumerate(labels) if x.startswith(current_code + " —")]
+        default_idx = matching[0] if matching else 0
         selected_label = st.selectbox(
             "Search stock",
             labels,
@@ -1155,6 +1273,7 @@ elif page=="Stock Detail":
 
     ticker_full=normalize_ticker(ticker_input)
     if ticker_full:
+        st.session_state.selected_stock = ticker_full
         with st.spinner(f"Analyzing {ticker_full}..."):
             res=analyze_stock(ticker_full,left,right,data_start,backtest_start)
 
@@ -1187,6 +1306,20 @@ elif page=="Stock Detail":
                 if ticker_full in st.session_state.watchlist:
                     st.session_state.watchlist.remove(ticker_full)
                     st.success("Removed from watchlist.")
+
+            nav1,nav2,nav3,nav4 = st.columns(4)
+            if nav1.button("← Back to Radar", use_container_width=True):
+                go_to("Scanner")
+            if nav2.button("⭐ Watchlist", use_container_width=True):
+                if ticker_full not in st.session_state.watchlist:
+                    st.session_state.watchlist.append(ticker_full)
+                    st.success("Added to Watchlist.")
+                else:
+                    go_to("Watchlist")
+            if nav3.button("💼 Portfolio", use_container_width=True):
+                go_to("Portfolio")
+            if nav4.button("📚 Stock Master", use_container_width=True):
+                go_to("Stock Master")
 
             st.subheader("Candlestick + Pivot Stair")
             chart_bars = st.select_slider(
@@ -1367,6 +1500,11 @@ elif page=="Watchlist":
     if wrows:
         wdf=pd.DataFrame(wrows)
         st.dataframe(wdf[["Ticker","Setup","Fit Score","Close","Pivot High","Distance Entry %","Strategy Return %","Buy&Hold %","Alpha %","Profit Factor"]].round(2),use_container_width=True,hide_index=True)
+
+        w1,w2 = st.columns([4,1])
+        watch_pick = w1.selectbox("Open Watchlist stock", wdf["Ticker"].tolist(), key="watch_pick")
+        if w2.button("View Detail", use_container_width=True, key="watch_detail"):
+            go_to("Stock Detail", watch_pick)
     else:
         st.info("Watchlist masih kosong.")
 
@@ -1376,6 +1514,16 @@ elif page=="Portfolio":
         "Portfolio manual benar-benar personal: pilih saham dari seluruh 951 IDX Stock Master. "
         "Saham dapat ditambahkan tanpa harus lolos filter AUTO."
     )
+
+    if st.session_state.manual_portfolio:
+        pn1,pn2 = st.columns([4,1])
+        portfolio_jump = pn1.selectbox(
+            "Quick open portfolio stock",
+            [x.replace(".JK","") for x in st.session_state.manual_portfolio],
+            key="portfolio_jump"
+        )
+        if pn2.button("Stock Detail", use_container_width=True, key="portfolio_jump_btn"):
+            go_to("Stock Detail", portfolio_jump)
 
     build_tab, analyze_tab = st.tabs(["➕ Build My Portfolio","📊 Analyze Portfolio"])
 
