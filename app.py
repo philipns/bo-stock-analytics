@@ -5,9 +5,11 @@ import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
 from datetime import datetime
+import requests
+from io import StringIO
 
 st.set_page_config(
-    page_title="BO Stock Analytics v2",
+    page_title="BO Stock Analytics v3",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -39,6 +41,51 @@ DEFAULT_AUTO = [
     "BMRI.JK","BBRI.JK","BBCA.JK","BBNI.JK","TLKM.JK","ASII.JK","UNTR.JK","ICBP.JK",
     "INDF.JK","KLBF.JK","CPIN.JK","JPFA.JK"
 ]
+
+
+# =========================================================
+# IDX STOCK MASTER
+# Source priority: KSEI Shares page (live), fallback to default list.
+# =========================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_idx_stock_master():
+    url = "https://web.ksei.co.id/services/registered-securities/shares"
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        html = requests.get(url, headers=headers, timeout=20)
+        html.raise_for_status()
+        tables = pd.read_html(StringIO(html.text))
+        candidates = []
+        for tbl in tables:
+            cols = [str(c).strip().lower() for c in tbl.columns]
+            if "code" in cols and "description" in cols:
+                temp = tbl.copy()
+                temp.columns = cols
+                temp = temp[["code","description"]].dropna()
+                temp["code"] = temp["code"].astype(str).str.strip().str.upper()
+                temp["description"] = temp["description"].astype(str).str.strip()
+                temp = temp[temp["code"].str.match(r"^[A-Z]{4}$", na=False)]
+                candidates.append(temp)
+        if candidates:
+            master = pd.concat(candidates, ignore_index=True).drop_duplicates("code")
+            master = master.sort_values("code").reset_index(drop=True)
+            master["ticker"] = master["code"] + ".JK"
+            master["label"] = master["code"] + " — " + master["description"]
+            return master
+    except Exception:
+        pass
+
+    fallback_codes = sorted(set([x.replace(".JK","") for x in DEFAULT_AUTO]))
+    master = pd.DataFrame({
+        "code": fallback_codes,
+        "description": ["Fallback stock master"] * len(fallback_codes)
+    })
+    master["ticker"] = master["code"] + ".JK"
+    master["label"] = master["code"] + " — " + master["description"]
+    return master
+
+def master_code_from_label(label):
+    return str(label).split(" — ")[0].strip().upper()
 
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = ["ANTM.JK","INCO.JK"]
@@ -306,7 +353,7 @@ def status_badge(status):
 
 # SIDEBAR
 st.sidebar.title("BO Stock Settings")
-page = st.sidebar.radio("Page",["Dashboard","Scanner","Universe","Stock Detail","Portfolio","Watchlist"])
+page = st.sidebar.radio("Page",["Dashboard","Scanner","Universe","Stock Master","Stock Detail","Portfolio","Watchlist"])
 left = st.sidebar.number_input("Pivot Left",min_value=1,value=4,step=1)
 right = st.sidebar.number_input("Pivot Right",min_value=1,value=4,step=1)
 initial_capital = st.sidebar.number_input("Initial Capital (IDR)",min_value=1_000_000,value=100_000_000,step=10_000_000)
@@ -318,9 +365,17 @@ universe_mode = st.sidebar.selectbox("Universe Mode",["AUTO","MANUAL","AUTO+MANU
 manual_text = st.sidebar.text_area("Manual Tickers",value="ANTM, INCO, ADRO, PTBA, BMRI")
 manual = [normalize_ticker(x) for x in manual_text.replace("\n",",").split(",")]
 manual = [x for x in manual if x]
-if universe_mode=="MANUAL": universe=manual
-elif universe_mode=="AUTO+MANUAL": universe=list(dict.fromkeys(DEFAULT_AUTO+manual))
-else: universe=DEFAULT_AUTO
+
+idx_master = load_idx_stock_master()
+st.sidebar.caption(f"IDX Stock Master: {len(idx_master)} codes")
+
+if universe_mode=="MANUAL":
+    universe=manual
+elif universe_mode=="AUTO+MANUAL":
+    universe=list(dict.fromkeys(DEFAULT_AUTO+manual))
+else:
+    universe=DEFAULT_AUTO
+
 st.sidebar.caption(f"{len(universe)} scanner tickers active")
 data_start="2005-01-01"
 
@@ -342,8 +397,8 @@ def scan_universe(universe_tuple,left,right,data_start,backtest_start_str):
 
 scanner=scan_universe(tuple(universe),left,right,data_start,str(backtest_start.date()))
 
-st.title("BO Stock Analytics v2")
-st.caption("IDX breakout research • Pivot 4/4 baseline • Python/Yahoo Finance • No order execution")
+st.title("BO Stock Analytics v3")
+st.caption("IDX breakout research • Searchable stock master • Pivot 4/4 baseline • Python/Yahoo Finance")
 
 if page in ["Dashboard","Scanner","Universe","Portfolio"] and scanner.empty:
     st.error("Scanner data unavailable. Try another universe or refresh later.")
@@ -374,6 +429,34 @@ if page=="Dashboard":
 
 elif page=="Scanner":
     st.subheader("Scanner")
+    st.caption("Default scanner memakai universe ringan. Gunakan Custom Batch untuk memilih saham dari seluruh IDX Stock Master tanpa mengubah universe utama.")
+
+    with st.expander("Custom Batch Scanner"):
+        batch_labels = st.multiselect(
+            "Choose stocks from IDX master",
+            idx_master["label"].tolist(),
+            default=[],
+            help="Sebaiknya 10–50 saham per batch agar stabil di Streamlit Free."
+        )
+        batch_limit = st.slider("Maximum stocks per batch", 5, 100, 30, 5)
+        run_batch = st.button("Run Custom Batch")
+
+        if run_batch and batch_labels:
+            batch_tickers = [
+                normalize_ticker(master_code_from_label(x))
+                for x in batch_labels[:batch_limit]
+            ]
+            custom_df = scan_universe(
+                tuple(batch_tickers), left, right, data_start, str(backtest_start.date())
+            )
+            if custom_df.empty:
+                st.warning("No results from selected batch.")
+            else:
+                st.success(f"Scanned {len(custom_df)} stocks")
+                st.dataframe(custom_df.round(2), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("Main Scanner Universe")
     status_filter=st.multiselect("Setup filter",sorted(scanner["Setup"].dropna().unique()),default=sorted(scanner["Setup"].dropna().unique()))
     view=scanner[(scanner["Setup"].isin(status_filter))&(scanner["Fit Score"]>=min_fit)]
     st.dataframe(view.round(2),use_container_width=True,hide_index=True)
@@ -384,13 +467,53 @@ elif page=="Universe":
     st.caption("Scanner Universe adalah subset untuk ranking rutin. Stock Detail tidak dibatasi oleh daftar ini.")
     st.dataframe(scanner[["Rank","Ticker","Setup","Fit Score","Strategy Return %","Buy&Hold %","Alpha %","Max DD %","Trades","Win Rate %","Profit Factor"]].round(2),use_container_width=True,hide_index=True)
 
+elif page=="Stock Master":
+    st.subheader("IDX Stock Master")
+    st.caption("Daftar saham untuk pencarian. Sumber utama: halaman Shares KSEI; bila sumber tidak dapat diakses, aplikasi memakai fallback list.")
+
+    c1,c2,c3 = st.columns(3)
+    c1.metric("Stock Codes Loaded", len(idx_master))
+    c2.metric("Scanner Universe", len(universe))
+    c3.metric("Watchlist", len(st.session_state.watchlist))
+
+    query = st.text_input("Search code / company name", placeholder="Contoh: ANTM, Petrosea, Bank")
+    master_view = idx_master.copy()
+    if query.strip():
+        q = query.strip().lower()
+        master_view = master_view[
+            master_view["code"].str.lower().str.contains(q, na=False) |
+            master_view["description"].str.lower().str.contains(q, na=False)
+        ]
+
+    st.dataframe(
+        master_view[["code","description"]].head(500),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.info(
+        "Stock Master hanya daftar pencarian. Scanner rutin sengaja memakai subset agar dashboard tetap cepat. "
+        "Untuk analisis saham apa pun, buka Stock Detail."
+    )
+
 elif page=="Stock Detail":
     st.subheader("Stock Detail — Search Any IDX Ticker")
-    st.info("Ketik kode saham tanpa .JK, misalnya: ANTM, GOTO, BRPT, CUAN, BREN. Dashboard akan mengambil data dan menjalankan Strategy BO 4/4 secara on-demand.")
+    st.info("Pilih saham dari IDX Stock Master atau ketik ticker manual. Analisis dilakukan on-demand sehingga Stock Detail tidak dibatasi scanner universe.")
 
-    csearch, cbtn = st.columns([4,1])
-    ticker_input = csearch.text_input("Ticker IDX",value="ANTM",placeholder="Contoh: ANTM")
-    analyze_clicked = cbtn.button("Analyze",use_container_width=True)
+    search_mode = st.radio("Search method", ["IDX Stock Master","Manual ticker"], horizontal=True)
+
+    if search_mode == "IDX Stock Master":
+        default_idx = 0
+        labels = idx_master["label"].tolist()
+        selected_label = st.selectbox(
+            "Search stock",
+            labels,
+            index=default_idx,
+            help="Ketik kode atau nama emiten untuk mencari."
+        )
+        ticker_input = master_code_from_label(selected_label)
+    else:
+        ticker_input = st.text_input("Ticker IDX", value="ANTM", placeholder="Contoh: PTRO")
 
     ticker_full=normalize_ticker(ticker_input)
     if ticker_full:
